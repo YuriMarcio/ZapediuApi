@@ -2,8 +2,8 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Actions\Webhooks\ProcessIncomingWebhookAction;
 use App\Http\Controllers\Controller;
-use App\Services\Zapi\ZapiWebhookService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -33,7 +33,7 @@ class AdminEndpointsController extends Controller
         ]);
     }
 
-    public function testWebhook(Request $request, ZapiWebhookService $service): JsonResponse
+    public function testWebhook(Request $request, ProcessIncomingWebhookAction $action): JsonResponse
     {
         if (! $this->authorized($request)) {
             return response()->json(['message' => 'Unauthorized.'], Response::HTTP_UNAUTHORIZED);
@@ -45,7 +45,7 @@ class AdminEndpointsController extends Controller
             $payload = $this->defaultPayload();
         }
 
-        $event = $service->ingest($payload);
+        $event = $action->execute($payload);
 
         return response()->json([
             'message' => 'Webhook de teste processado com sucesso.',

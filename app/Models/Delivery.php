@@ -2,13 +2,17 @@
 
 namespace App\Models;
 
+use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Delivery extends Model
 {
+    use BelongsToCompany;
+
     protected $fillable = [
+        'company_id',
         'store_id',
         'external_id',
         'order_code',
