@@ -7,12 +7,15 @@ use App\Models\Company;
 use App\Models\Delivery;
 use App\Models\Order;
 use App\Models\WebhookEvent;
+use App\Services\Zapi\ZapiWebhookService;
 use App\Support\Tenancy\TenantContext;
 
 class ProcessIncomingWebhookAction
 {
-    public function __construct(private readonly HandleButtonClickAction $handleButtonClickAction)
-    {
+    public function __construct(
+        private readonly HandleButtonClickAction $handleButtonClickAction,
+        private readonly ZapiWebhookService $zapiWebhookService,
+    ) {
     }
 
     /**
@@ -42,6 +45,14 @@ class ProcessIncomingWebhookAction
         if ($buttonClick !== null) {
             $this->handleButtonClickAction->execute($buttonClick);
         }
+
+        if ($company !== null) {
+            config()->set('services.zapi.instance_id', $company->zapi_instance_id ?: config('services.zapi.instance_id'));
+            config()->set('services.zapi.instance_token', $company->zapi_instance_token ?: config('services.zapi.instance_token'));
+            config()->set('services.zapi.client_token', $company->zapi_client_token ?: config('services.zapi.client_token'));
+        }
+
+        $this->zapiWebhookService->maybeSendAutoReply($payload);
 
         return $event;
     }

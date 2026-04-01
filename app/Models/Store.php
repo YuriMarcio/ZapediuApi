@@ -22,6 +22,7 @@ class Store extends Model implements HasMedia
         'legal_name',
         'slug',
         'segment',
+        'category_id',
         'whatsapp_phone',
         'phone',
         'cnpj',
@@ -60,6 +61,11 @@ class Store extends Model implements HasMedia
     public function products(): HasMany
     {
         return $this->hasMany(Product::class);
+    }
+
+    public function category(): BelongsTo
+    {
+        return $this->belongsTo(Category::class);
     }
 
     public function orders(): HasMany

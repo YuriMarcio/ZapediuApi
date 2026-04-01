@@ -2,7 +2,10 @@
 
 namespace App\Services\Zapi;
 
+use App\Models\Category;
 use App\Models\Delivery;
+use App\Models\Product;
+use App\Models\Store;
 use App\Models\WebhookEvent;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
@@ -54,7 +57,7 @@ class ZapiWebhookService
         return $event;
     }
 
-    private function maybeSendAutoReply(array $payload): void
+    public function maybeSendAutoReply(array $payload): void
     {
         if (! (bool) config('services.zapi.auto_reply_enabled')) {
             return;
@@ -85,10 +88,10 @@ class ZapiWebhookService
 
     private function handleCommerceFlow(array $payload, string $phone): bool
     {
-        $selectedCategoryId = $this->resolveSelectedCategoryId($payload);
+        $selectedCategorySlug = $this->resolveSelectedCategoryId($payload);
 
-        if ($selectedCategoryId !== null) {
-            return $this->sendCategoryStores($phone, $selectedCategoryId);
+        if ($selectedCategorySlug !== null) {
+            return $this->sendCategoryStores($phone, $selectedCategorySlug);
         }
 
         $buttonId = strtolower(trim((string) ($this->resolveButtonReplyId($payload) ?? '')));
@@ -138,6 +141,10 @@ class ZapiWebhookService
             return $this->sendWelcomePrompt($phone);
         }
 
+        if (in_array($normalizedText, ['ver categorias', 'categorias'], true)) {
+            return $this->sendCategoriesCarousel($phone);
+        }
+
         $triggerKeyword = $this->normalizeText((string) config('services.zapi.list_trigger_keyword', 'filtro'));
         $filterKeywords = array_values(array_filter([
             $triggerKeyword,
@@ -154,7 +161,18 @@ class ZapiWebhookService
         }
 
         if (in_array($normalizedText, ['ver lojas', 'lojas', 'mostrar lojas'], true)) {
-            $allStoreIds = array_keys($this->storesCatalog());
+            $allStoreIds = Store::query()
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->pluck('slug')
+                ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
+                ->values()
+                ->all();
+
+            if ($allStoreIds === []) {
+                return false;
+            }
+
             $state['store_results'] = $allStoreIds;
             $state['store_offset'] = 0;
             $state['selected_store_id'] = null;
@@ -172,6 +190,22 @@ class ZapiWebhookService
 
     private function handleFlowButton(string $phone, string $buttonId): bool
     {
+        if ($buttonId === 'btn_ver_lojas') {
+            return $this->sendAllStoresFallback($phone, 'Aqui esta a vitrine de lojas ativas.');
+        }
+
+        if ($buttonId === 'btn_ver_categorias') {
+            return $this->sendCategoriesCarousel($phone);
+        }
+
+        if ($buttonId === 'btn_como_funciona') {
+            return $this->sendHowItWorks($phone);
+        }
+
+        if (str_starts_with($buttonId, 'buscar_cat_')) {
+            return $this->sendStoresByCategoryButtonPayload($phone, $buttonId);
+        }
+
         if ($buttonId === 'flow_home') {
             return $this->sendWelcomePrompt($phone);
         }
@@ -219,60 +253,64 @@ class ZapiWebhookService
 
     private function resolveAddButtonPayload(string $buttonId): ?array
     {
-        if (! str_starts_with($buttonId, 'flow_add_')) {
+        if (preg_match('/^flow_add_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches) !== 1) {
             return null;
         }
 
-        $rawPayload = substr($buttonId, strlen('flow_add_'));
-
-        if ($rawPayload === false || $rawPayload === '') {
-            return null;
-        }
-
-        $storeIds = array_keys($this->storesCatalog());
-
-        usort($storeIds, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
-
-        foreach ($storeIds as $storeId) {
-            $prefix = $storeId.'_';
-
-            if (! str_starts_with($rawPayload, $prefix)) {
-                continue;
-            }
-
-            $productId = substr($rawPayload, strlen($prefix));
-
-            if ($productId === false || $productId === '') {
-                return null;
-            }
-
-            return [
-                'store_id' => $storeId,
-                'product_id' => $productId,
-            ];
-        }
-
-        return null;
+        return [
+            'store_id' => $matches[1],
+            'product_id' => $matches[2],
+        ];
     }
 
     private function sendWelcomePrompt(string $phone): bool
     {
-        $message = trim((string) config('services.zapi.flow_welcome_message', 'Ola, digite o que procura ou digite filtro.'));
-
-        if ($message === '') {
-            return false;
-        }
+        $message = "Olá! 👋 Bem-vindo ao Zapediu!\n\nEstou aqui para matar a sua fome em poucos segundos. 🛵💨\n\nVocê pode simplesmente me dizer o que quer comer, por exemplo:\n🍔 \"Quero um hambúrguer\"\n🍕 \"Me mostre as pizzarias\"\n🏪 \"Cardápio do Pastel do Zeca\"\n\nOu, se preferir, escolha uma das opções abaixo:";
+        $fallbackMessage = "Olá! 👋 Bem-vindo ao Zapediu!\n\nEstou aqui para matar a sua fome em poucos segundos.\n\nVocê pode me dizer o que quer comer, por exemplo:\n- Quero um hambúrguer\n- Me mostre as pizzarias\n- Cardápio do Pastel do Zeca\n\nOu digite:\n- ver lojas\n- ver categorias\n- como funciona";
 
         $state = $this->flowState($phone);
         $state['welcomed'] = true;
         $this->saveFlowState($phone, $state);
 
         try {
-            $this->zapiClient->sendText($phone, $message);
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'btn_ver_lojas', 'label' => '🏪 Ver Lojas'],
+                ['id' => 'btn_ver_categorias', 'label' => '🍔 Ver Categorias'],
+                ['id' => 'btn_como_funciona', 'label' => '❓ Como funciona'],
+            ]);
 
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send Z-API welcome prompt.', [
+                'phone' => $phone,
+                'error' => $exception->getMessage(),
+            ]);
+
+            try {
+                $this->zapiClient->sendText($phone, $fallbackMessage);
+
+                return true;
+            } catch (\Throwable $fallbackException) {
+                Log::warning('Failed to send Z-API welcome prompt fallback.', [
+                    'phone' => $phone,
+                    'error' => $fallbackException->getMessage(),
+                ]);
+
+                return false;
+            }
+        }
+    }
+
+    private function sendHowItWorks(string $phone): bool
+    {
+        $message = 'Voce escolhe uma categoria, seleciona uma loja e finaliza tudo no WhatsApp. Simples e rapido.';
+
+        try {
+            $this->zapiClient->sendText($phone, $message);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send how-it-works message.', [
                 'phone' => $phone,
                 'error' => $exception->getMessage(),
             ]);
@@ -323,7 +361,14 @@ class ZapiWebhookService
             return $matchedIds;
         }
 
-        $popularIds = ['pastel_do_zeca', 'burguer_centro', 'pizza_bela', 'poke_wave', 'sushi_zen', 'grelha_prime', 'shawarma_house', 'doceria_mila'];
+        $popularIds = Store::query()
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->pluck('slug')
+            ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
+            ->values()
+            ->all();
+
         $extra = array_values(array_diff($popularIds, $matchedIds));
         $needed = $minResults - count($matchedIds);
 
@@ -336,7 +381,13 @@ class ZapiWebhookService
         $storeIds = array_values(array_filter($state['store_results'] ?? [], fn (mixed $id) => is_string($id) && $id !== ''));
 
         if ($storeIds === []) {
-            $storeIds = array_keys($this->storesCatalog());
+            $storeIds = Store::query()
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->pluck('slug')
+                ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
+                ->values()
+                ->all();
         }
 
         $pageStoreIds = array_slice($storeIds, $offset, self::STORE_PAGE_SIZE);
@@ -345,22 +396,31 @@ class ZapiWebhookService
             return false;
         }
 
-        $catalog = $this->storesCatalog();
+        $stores = Store::query()
+            ->where('is_active', true)
+            ->whereIn('slug', $pageStoreIds)
+            ->with('category:id,slug,name')
+            ->get()
+            ->keyBy('slug');
+
         $cards = [];
 
         foreach ($pageStoreIds as $storeId) {
-            if (! array_key_exists($storeId, $catalog)) {
+            $store = $stores->get($storeId);
+
+            if (! $store instanceof Store) {
                 continue;
             }
 
-            $store = $catalog[$storeId];
             $cards[] = [
-                'text' => $store['title'].' | ⭐ '.$store['rating']."\n".$this->buildStoreLogisticsLine($store),
-                'image' => $store['image'],
+                'text' => $this->formatStoreCardText($store),
+                'image' => $store->cover_image_url
+                    ?? $store->logo_url
+                    ?? 'https://picsum.photos/seed/loja-'.urlencode((string) $store->slug).'/600/600',
                 'buttons' => [
                     [
-                        'id' => 'view_menu_'.$storeId,
-                        'label' => 'Cardapio',
+                        'id' => 'view_menu_'.$store->slug,
+                        'label' => '📖 Ver Cardápio',
                         'type' => 'REPLY',
                     ],
                 ],
@@ -393,7 +453,7 @@ class ZapiWebhookService
         try {
             $this->zapiClient->sendCarousel(
                 $phone,
-                'Vitrine de Lojas: escolha uma loja no carrossel ou toque em Ver mais.',
+                '🏪 Lojas disponíveis — toque em Ver Cardápio para explorar',
                 $cards
             );
 
@@ -408,43 +468,121 @@ class ZapiWebhookService
         }
     }
 
-    private function buildStoreLogisticsLine(array $store): string
+    private function buildStoreLogisticsLine(mixed $store): string
     {
-        $distance = (string) ($store['distance'] ?? '2,1 km');
-        $shipping = (string) ($store['shipping'] ?? 'Frete Gratis');
-        $eta = (string) ($store['eta'] ?? '30-40 min');
+        if (is_array($store)) {
+            $distance = (string) ($store['distance'] ?? '2,1 km');
+            $shipping = (string) ($store['shipping'] ?? 'Frete Gratis');
+            $eta = (string) ($store['eta'] ?? '30-40 min');
+
+            return $distance.' • '.$shipping.' • '.$eta;
+        }
+
+        if ($store instanceof Store) {
+            $seed = abs(crc32((string) ($store->slug ?: $store->id)));
+            $distances = ['0,9 km', '1,4 km', '2,1 km', '2,8 km', '3,6 km'];
+            $shippings = ['Frete Gratis', 'Frete R$ 3,99', 'Frete R$ 4,99', 'Frete R$ 6,49'];
+            $etas = ['15-25 min', '20-30 min', '25-35 min', '30-40 min'];
+
+            $distance = $distances[$seed % count($distances)];
+            $shipping = $shippings[$seed % count($shippings)];
+            $eta = $etas[$seed % count($etas)];
+
+            return $distance.' • '.$shipping.' • '.$eta;
+        }
+
+        $distance = '2,1 km';
+        $shipping = 'Frete Gratis';
+        $eta = '30-40 min';
 
         return $distance.' • '.$shipping.' • '.$eta;
     }
 
+    private function formatStoreCardText(Store $store): string
+    {
+        $headline = $store->name.' '.$this->storeCategoryEmoji($store);
+        $meta = '⭐ '.$this->buildStoreRating($store).' | 🛵 '.$this->buildStoreEta($store);
+        $description = trim((string) ($store->description ?? 'O melhor da categoria no marketplace Zapediu.'));
+
+        if (mb_strlen($description) > 70) {
+            $description = rtrim(mb_substr($description, 0, 67)).'...';
+        }
+
+        return $headline."\n".$meta."\n\n💬 \"".$description."\"";
+    }
+
+    private function storeCategoryEmoji(Store $store): string
+    {
+        return match ((string) ($store->category?->slug ?? '')) {
+            'cat_lanches' => '🍔',
+            'cat_pastel' => '🥟',
+            'cat_pizza' => '🍕',
+            'cat_acai' => '🍇',
+            'cat_refeicao' => '🍽️',
+            'cat_farmacia' => '💊',
+            'cat_padaria' => '🥖',
+            'cat_mercadinho' => '🛒',
+            default => '🏬',
+        };
+    }
+
+    private function buildStoreRating(Store $store): string
+    {
+        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
+
+        return number_format(4.2 + (($seed % 8) / 10), 1, '.', '');
+    }
+
+    private function buildStoreEta(Store $store): string
+    {
+        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
+        $etas = ['15-25 min', '20-30 min', '25-35 min', '30-40 min'];
+
+        return $etas[$seed % count($etas)];
+    }
+
     private function selectStore(string $phone, string $storeId): bool
     {
-        $catalog = $this->storesCatalog();
+        $store = Store::query()
+            ->where('is_active', true)
+            ->where('slug', $storeId)
+            ->first();
 
-        if (! array_key_exists($storeId, $catalog)) {
+        if ($store === null) {
             return false;
         }
 
         $state = $this->flowState($phone);
-        $state['selected_store_id'] = $storeId;
+        $state['selected_store_id'] = $store->slug;
         $this->saveFlowState($phone, $state);
 
-        return $this->sendProductsCarousel($phone, $storeId, 0);
+        return $this->sendProductsCarousel($phone, (string) $store->slug, 0);
     }
 
     private function sendProductsCarousel(string $phone, string $storeId, int $offset): bool
     {
-        $catalog = $this->storesCatalog();
+        $store = Store::query()
+            ->with('category')
+            ->where('is_active', true)
+            ->where('slug', $storeId)
+            ->first();
 
-        if (! array_key_exists($storeId, $catalog)) {
+        if ($store === null) {
             return false;
         }
 
-        $store = $catalog[$storeId];
-        $products = $store['products'];
-        $pageProducts = array_slice($products, $offset, self::PRODUCT_PAGE_SIZE);
+        $productsQuery = Product::query()
+            ->where('is_active', true)
+            ->where('store_id', $store->id)
+            ->orderBy('name');
 
-        if ($pageProducts === []) {
+        $totalProducts = (clone $productsQuery)->count();
+        $pageProducts = $productsQuery
+            ->skip($offset)
+            ->take(self::PRODUCT_PAGE_SIZE)
+            ->get();
+
+        if ($pageProducts->isEmpty()) {
             return false;
         }
 
@@ -452,17 +590,14 @@ class ZapiWebhookService
 
         foreach ($pageProducts as $product) {
             $cards[] = [
-                'text' => $product['name'].' | R$ '.number_format((float) $product['price'], 2, ',', '.')."\n".$product['description'],
-                'image' => $product['image'],
+                'text' => $this->formatProductCardText($product, $store),
+                'image' => $product->image_url
+                    ?? (is_string($product->image_path) && $product->image_path !== '' ? $product->image_path : null)
+                    ?? 'https://picsum.photos/seed/produto-'.(int) $product->id.'/600/600',
                 'buttons' => [
                     [
-                        'id' => 'flow_add_'.$storeId.'_'.$product['id'],
-                        'label' => 'Adicionar',
-                        'type' => 'REPLY',
-                    ],
-                    [
-                        'id' => 'flow_cart',
-                        'label' => 'Carrinho',
+                        'id' => 'flow_add_'.$store->slug.'_'.(int) $product->id,
+                        'label' => '➕ Adicionar.',
                         'type' => 'REPLY',
                     ],
                 ],
@@ -471,13 +606,13 @@ class ZapiWebhookService
 
         $nextOffset = $offset + count($pageProducts);
 
-        if ($nextOffset < count($products)) {
+        if ($nextOffset < $totalProducts) {
             $cards[] = [
                 'text' => 'Mostrar mais produtos da loja',
                 'image' => (string) config('services.zapi.flow_more_image', 'https://picsum.photos/seed/mais-lojas/600/600'),
                 'buttons' => [
                     [
-                        'id' => 'flow_product_more_'.$storeId.'_'.$nextOffset,
+                        'id' => 'flow_product_more_'.$store->slug.'_'.$nextOffset,
                         'label' => 'Mostrar mais',
                         'type' => 'REPLY',
                     ],
@@ -498,7 +633,7 @@ class ZapiWebhookService
         ];
 
         try {
-            $this->zapiClient->sendCarousel($phone, 'Produtos da loja '.$store['title'].'.', $cards);
+            $this->zapiClient->sendCarousel($phone, $this->buildMenuIntroMessage($store), $cards);
 
             return true;
         } catch (\Throwable $exception) {
@@ -514,15 +649,22 @@ class ZapiWebhookService
 
     private function addProductToCart(string $phone, string $storeId, string $productId): bool
     {
-        $catalog = $this->storesCatalog();
+        $store = Store::query()
+            ->where('is_active', true)
+            ->where('slug', $storeId)
+            ->first();
 
-        if (! array_key_exists($storeId, $catalog)) {
+        if ($store === null) {
             return false;
         }
 
-        $product = collect($catalog[$storeId]['products'])->first(fn (array $item): bool => $item['id'] === $productId);
+        $product = Product::query()
+            ->where('is_active', true)
+            ->where('store_id', $store->id)
+            ->where('id', (int) $productId)
+            ->first();
 
-        if (! is_array($product)) {
+        if ($product === null) {
             return false;
         }
 
@@ -546,7 +688,7 @@ class ZapiWebhookService
             ? 'Seu carrinho foi reiniciado porque cada carrinho aceita produtos de apenas uma loja.\n\n'
             : '';
 
-        $message = $notice.'Produto adicionado: '.$product['name'].'.\nDigite "carrinho" para revisar, "finalizar" para pagar ou "voltar lojas" para trocar de loja.';
+        $message = $notice.'Produto adicionado: '.$product->name.'.\nDigite "carrinho" para revisar, "finalizar" para pagar ou "voltar lojas" para trocar de loja.';
 
         try {
             $this->zapiClient->sendText($phone, $message);
@@ -562,6 +704,75 @@ class ZapiWebhookService
 
             return false;
         }
+    }
+
+    private function buildCategoryHeader(Category $category): string
+    {
+        $emoji = match ($category->slug) {
+            'cat_lanches'    => '🍔',
+            'cat_pastel'     => '🥟',
+            'cat_pizza'      => '🍕',
+            'cat_acai'       => '🍇',
+            'cat_refeicao'   => '🍽️',
+            'cat_farmacia'   => '💊',
+            'cat_padaria'    => '🥖',
+            'cat_mercadinho' => '🛒',
+            default          => '🏪',
+        };
+
+        $name = mb_convert_case(mb_strtolower((string) $category->name), MB_CASE_TITLE, 'UTF-8');
+
+        return $emoji.' Lojas de '.$name.' — escolha e explore o cardápio';
+    }
+
+    private function buildMenuIntroMessage(Store $store): string
+    {
+        return '📖 Cardápio: '.$store->name." 📖\n\n"
+            .'Deslize para o lado, escolha o seu pedido e clique em Adicionar'
+            ."\n";
+    }
+
+    private function formatProductCardText(Product $product, Store $store): string
+    {
+        $name = trim((string) $product->name);
+        $price = 'R$ '.number_format((float) $product->price, 2, ',', '.');
+        $description = $this->normalizeProductDescription((string) ($product->description ?? 'Produto saboroso.'));
+
+        return $name.' '.$this->productEmoji($product, $store)."\n\n"
+            .'🏷️ Por: '.$price."\n\n"
+            .'💬 "'.$description.'"';
+    }
+
+    private function normalizeProductDescription(string $description): string
+    {
+        $description = trim($description);
+
+        if ($description === '') {
+            return 'Produto saboroso.';
+        }
+
+        if (! str_ends_with($description, '.') && ! str_ends_with($description, '!') && ! str_ends_with($description, '?')) {
+            $description .= '.';
+        }
+
+        return $description;
+    }
+
+    private function productEmoji(Product $product, Store $store): string
+    {
+        $slug = (string) ($store->category?->slug ?? '');
+
+        return match ($slug) {
+            'cat_lanches' => '🍔',
+            'cat_pastel' => '🥟',
+            'cat_pizza' => '🍕',
+            'cat_acai' => '🍇',
+            'cat_refeicao' => '🍽️',
+            'cat_farmacia' => '💊',
+            'cat_padaria' => '🥖',
+            'cat_mercadinho' => '🛒',
+            default => '🍽️',
+        };
     }
 
     private function sendCartSummary(string $phone): bool
@@ -585,26 +796,32 @@ class ZapiWebhookService
         }
 
         $storeId = (string) ($cart['store_id'] ?? '');
-        $catalog = $this->storesCatalog();
+        $store = Store::query()->where('slug', $storeId)->first();
 
-        if ($storeId === '' || ! array_key_exists($storeId, $catalog)) {
+        if ($storeId === '' || $store === null) {
             return false;
         }
 
-        $productsById = collect($catalog[$storeId]['products'])->keyBy('id');
-        $lines = ['Carrinho - '.$catalog[$storeId]['title']];
+        $productIds = array_map(static fn (string|int $id): int => (int) $id, array_keys($cart['items']));
+        $productsById = Product::query()
+            ->where('store_id', $store->id)
+            ->whereIn('id', $productIds)
+            ->get()
+            ->keyBy('id');
+
+        $lines = ['Carrinho - '.$store->name];
         $total = 0.0;
 
         foreach ($cart['items'] as $productId => $qty) {
             $product = $productsById->get($productId);
 
-            if (! is_array($product) || $qty < 1) {
+            if (! $product instanceof Product || $qty < 1) {
                 continue;
             }
 
-            $lineTotal = ((float) $product['price']) * (int) $qty;
+            $lineTotal = ((float) $product->price) * (int) $qty;
             $total += $lineTotal;
-            $lines[] = '- '.$qty.'x '.$product['name'].' (R$ '.number_format($lineTotal, 2, ',', '.').')';
+            $lines[] = '- '.$qty.'x '.$product->name.' (R$ '.number_format($lineTotal, 2, ',', '.').')';
         }
 
         $lines[] = '';
@@ -646,23 +863,29 @@ class ZapiWebhookService
         }
 
         $storeId = (string) ($cart['store_id'] ?? '');
-        $catalog = $this->storesCatalog();
+        $store = Store::query()->where('slug', $storeId)->first();
 
-        if ($storeId === '' || ! array_key_exists($storeId, $catalog)) {
+        if ($storeId === '' || $store === null) {
             return false;
         }
 
-        $productsById = collect($catalog[$storeId]['products'])->keyBy('id');
+        $productIds = array_map(static fn (string|int $id): int => (int) $id, array_keys($cart['items']));
+        $productsById = Product::query()
+            ->where('store_id', $store->id)
+            ->whereIn('id', $productIds)
+            ->get()
+            ->keyBy('id');
+
         $total = 0.0;
 
         foreach ($cart['items'] as $productId => $qty) {
             $product = $productsById->get($productId);
 
-            if (! is_array($product) || $qty < 1) {
+            if (! $product instanceof Product || $qty < 1) {
                 continue;
             }
 
-            $total += ((float) $product['price']) * (int) $qty;
+            $total += ((float) $product->price) * (int) $qty;
         }
 
         $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total);
@@ -703,56 +926,180 @@ class ZapiWebhookService
 
     private function sendCategoryStores(string $phone, string $categoryId): bool
     {
-        $categories = $this->categoryRows();
+        $category = Category::query()
+            ->where('is_active', true)
+            ->where('slug', $categoryId)
+            ->first();
 
-        if (! array_key_exists($categoryId, $categories)) {
+        if ($category === null) {
             return false;
         }
 
-        $state = $this->flowState($phone);
-        $state['last_search'] = $categories[$categoryId]['title'];
-        $state['store_results'] = $this->searchStoreIdsByTags($categories[$categoryId]['tags']);
-        $state['store_offset'] = 0;
-        $state['selected_store_id'] = null;
-        $this->saveFlowState($phone, $state);
+        $stores = Store::query()
+            ->where('is_active', true)
+            ->where('category_id', $category->id)
+            ->orderBy('name')
+            ->limit(10)
+            ->with('category:id,slug,name')
+            ->get();
 
-        return $this->sendStoresPage($phone, 0);
+        return $this->sendStoreCarouselFromCollection($phone, $stores, $this->buildCategoryHeader($category));
     }
 
-    private function sendCategoryList(string $phone): bool
+    private function sendCategoriesCarousel(string $phone): bool
     {
-        $message = trim((string) config('services.zapi.list_message'));
-        $buttonText = trim((string) config('services.zapi.list_button_text'));
-        $title = trim((string) config('services.zapi.list_title'));
-        $description = trim((string) config('services.zapi.list_description'));
-        $options = $this->buildCategoryListOptions();
+        $categories = Category::query()
+            ->where('is_active', true)
+            ->orderBy('ordem_exibicao')
+            ->limit(10)
+            ->get();
 
-        if ($message === '' || $buttonText === '' || $title === '' || $options === []) {
-            return $this->sendAllStoresFallback($phone, 'Escolha uma categoria e depois a loja desejada.');
+        if ($categories->isEmpty()) {
+            return $this->sendAllStoresFallback($phone, 'Nenhuma categoria encontrada. Exibindo as lojas ativas.');
+        }
+
+        $cards = [];
+
+        foreach ($categories as $category) {
+            $cards[] = [
+                'text' => $category->name,
+                'image' => $category->image_url ?: 'https://picsum.photos/seed/categoria-default/600/600',
+                'buttons' => [
+                    [
+                        'id' => 'buscar_cat_'.$this->buttonSlugFromCategorySlug((string) $category->slug),
+                        'label' => 'Ver lojas',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
         }
 
         try {
-            $composedMessage = $description !== '' ? $message."\n".$description : $message;
-            $this->zapiClient->sendList($phone, $composedMessage, $buttonText, $title, $description, $options);
+            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria para ver lojas ativas.', $cards);
 
             return true;
         } catch (\Throwable $exception) {
-            Log::warning('Failed to send Z-API category list.', [
+            Log::warning('Failed to send categories carousel.', [
                 'phone' => $phone,
                 'error' => $exception->getMessage(),
             ]);
 
-            return $this->sendAllStoresFallback($phone, 'Nao consegui abrir a lista interativa. Mostrando as lojas direto no carrossel.');
+            return false;
         }
+    }
+
+    private function sendStoresByCategoryButtonPayload(string $phone, string $buttonId): bool
+    {
+        $slugPart = substr($buttonId, strlen('buscar_cat_'));
+
+        if (! is_string($slugPart) || trim($slugPart) === '') {
+            return false;
+        }
+
+        $categorySlug = $this->resolveCategorySlugFromButtonSlug($slugPart);
+
+        if ($categorySlug === null) {
+            return false;
+        }
+
+        return $this->sendCategoryStores($phone, $categorySlug);
+    }
+
+    private function sendStoreCarouselFromCollection(string $phone, $stores, string $message): bool
+    {
+        if ($stores->isEmpty()) {
+            try {
+                $this->zapiClient->sendText($phone, 'Nao encontramos lojas ativas para esta categoria no momento.');
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send empty stores-by-category response.', [
+                    'phone' => $phone,
+                    'error' => $exception->getMessage(),
+                ]);
+
+                return false;
+            }
+        }
+
+        $cards = [];
+
+        foreach ($stores as $store) {
+            $cards[] = [
+                'text' => $this->formatStoreCardText($store),
+                'image' => $store->cover_image_url
+                    ?? $store->logo_url
+                    ?? 'https://picsum.photos/seed/loja-'.$store->id.'/600/600',
+                'buttons' => [
+                    [
+                        'id' => 'view_menu_'.$store->slug,
+                        'label' => '📖 Ver Cardápio',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
+        }
+
+        try {
+            $this->zapiClient->sendCarousel($phone, $message, $cards);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send stores carousel by category.', [
+                'phone' => $phone,
+                'error' => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function buttonSlugFromCategorySlug(string $slug): string
+    {
+        if (str_starts_with($slug, 'cat_')) {
+            return substr($slug, 4);
+        }
+
+        return $slug;
+    }
+
+    private function resolveCategorySlugFromButtonSlug(string $slug): ?string
+    {
+        $normalized = strtolower(trim($slug));
+
+        if ($normalized === '') {
+            return null;
+        }
+
+        $direct = Category::query()
+            ->where('is_active', true)
+            ->where('slug', $normalized)
+            ->first();
+
+        if ($direct !== null) {
+            return (string) $direct->slug;
+        }
+
+        $prefixed = Category::query()
+            ->where('is_active', true)
+            ->where('slug', 'cat_'.$normalized)
+            ->first();
+
+        return $prefixed?->slug;
+    }
+
+    private function sendCategoryList(string $phone): bool
+    {
+        return $this->sendCategoriesCarousel($phone);
     }
 
     private function sendAllStoresFallback(string $phone, string $notice): bool
     {
-        $state = $this->flowState($phone);
-        $state['store_results'] = array_keys($this->storesCatalog());
-        $state['store_offset'] = 0;
-        $state['selected_store_id'] = null;
-        $this->saveFlowState($phone, $state);
+        $stores = Store::query()
+            ->where('is_active', true)
+            ->orderBy('name')
+            ->limit(10)
+            ->get();
 
         try {
             $this->zapiClient->sendText($phone, $notice);
@@ -763,7 +1110,7 @@ class ZapiWebhookService
             ]);
         }
 
-        return $this->sendStoresPage($phone, 0);
+        return $this->sendStoreCarouselFromCollection($phone, $stores, '🏪 Lojas disponíveis — toque em Ver Cardápio para explorar');
     }
 
     private function handleCommerceReplyIntent(array $payload, string $phone, string $messageText): bool
@@ -1089,64 +1436,35 @@ class ZapiWebhookService
             data_get($payload, 'message.optionListResponse.title'),
         ];
 
-        $categories = $this->categoryRows();
-
         foreach ($candidates as $candidate) {
             $id = $this->extractScalarText($candidate, ['selectedRowId', 'id']);
-
-            if ($id !== null && str_starts_with(strtoupper($id), 'CAT_')) {
-                return strtoupper($id);
-            }
 
             if ($id === null) {
                 continue;
             }
 
-            $normalized = $this->normalizeText($id);
+            $normalized = strtolower(trim($id));
 
-            foreach ($categories as $category) {
-                if ($normalized === $this->normalizeText($category['title'])) {
-                    return $category['id'];
-                }
+            if (str_starts_with($normalized, 'buscar_cat_')) {
+                $slug = substr($normalized, strlen('buscar_cat_'));
+
+                return $this->resolveCategorySlugFromButtonSlug((string) $slug);
+            }
+
+            if (str_starts_with($normalized, 'cat_')) {
+                return Category::query()->where('is_active', true)->where('slug', $normalized)->value('slug');
+            }
+
+            $prefixed = 'cat_'.$normalized;
+
+            $prefixedExists = Category::query()->where('is_active', true)->where('slug', $prefixed)->value('slug');
+
+            if (is_string($prefixedExists)) {
+                return $prefixedExists;
             }
         }
 
         return null;
-    }
-
-    private function buildCategoryListOptions(): array
-    {
-        return array_values($this->categoryRows());
-    }
-
-    private function categoryRows(): array
-    {
-        return [
-            'CAT_BURGERS' => [
-                'id' => 'CAT_BURGERS',
-                'title' => 'Hamburgueres Artesanais',
-                'description' => 'Blend de 180g grelhado no fogo.',
-                'tags' => ['hamburguer', 'burger', 'lanche'],
-            ],
-            'CAT_COMBOS' => [
-                'id' => 'CAT_COMBOS',
-                'title' => 'Combos Promocionais',
-                'description' => 'Burger + Batata + Refri com desconto.',
-                'tags' => ['combo', 'promocao', 'oferta'],
-            ],
-            'CAT_BEBIDAS' => [
-                'id' => 'CAT_BEBIDAS',
-                'title' => 'Bebidas',
-                'description' => 'Sucos naturais, refris e cervejas.',
-                'tags' => ['bebida', 'suco', 'refrigerante'],
-            ],
-            'CAT_SOBREMESAS' => [
-                'id' => 'CAT_SOBREMESAS',
-                'title' => 'Sobremesas',
-                'description' => 'Milk-shake, brownie e acai.',
-                'tags' => ['sobremesa', 'doce', 'acai'],
-            ],
-        ];
     }
 
     private function extractScalarText(mixed $value, array $preferredKeys = []): ?string
@@ -1184,266 +1502,58 @@ class ZapiWebhookService
         return null;
     }
 
-    private function storesCatalog(): array
-    {
-        return [
-            'burguer_centro' => [
-                'id' => 'burguer_centro',
-                'title' => 'Burguer Centro',
-                'description' => 'Smash burgers artesanais e combos para a noite.',
-                'rating' => '4.8',
-                'distance' => '1,8 km',
-                'shipping' => 'Frete Gratis',
-                'eta' => '25-35 min',
-                'image' => 'https://picsum.photos/seed/burguer-centro/600/600',
-                'tags' => ['burger', 'hamburguer', 'lanche', 'combo'],
-                'products' => [
-                    ['id' => 'bc_smash', 'name' => 'Smash Classico', 'description' => 'Pao brioche, blend 120g e queijo.', 'price' => 24.90, 'image' => 'https://picsum.photos/seed/bc-smash/600/600'],
-                    ['id' => 'bc_bacon', 'name' => 'Smash Bacon', 'description' => 'Smash com bacon crocante e molho especial.', 'price' => 29.90, 'image' => 'https://picsum.photos/seed/bc-bacon/600/600'],
-                    ['id' => 'bc_combo', 'name' => 'Combo Smash + Fritas', 'description' => 'Smash classico com fritas media.', 'price' => 34.90, 'image' => 'https://picsum.photos/seed/bc-combo/600/600'],
-                ],
-            ],
-            'pizza_bela' => [
-                'id' => 'pizza_bela',
-                'title' => 'Pizza Bela',
-                'description' => 'Pizzas de longa fermentacao e borda recheada.',
-                'rating' => '4.7',
-                'distance' => '2,4 km',
-                'shipping' => 'Frete R$ 4,99',
-                'eta' => '35-45 min',
-                'image' => 'https://picsum.photos/seed/pizza-bela/600/600',
-                'tags' => ['pizza', 'italiana', 'jantar', 'combo'],
-                'products' => [
-                    ['id' => 'pb_marg', 'name' => 'Pizza Margherita', 'description' => 'Molho italiano, muzzarela e manjericao.', 'price' => 52.00, 'image' => 'https://picsum.photos/seed/pb-marg/600/600'],
-                    ['id' => 'pb_calab', 'name' => 'Pizza Calabresa', 'description' => 'Calabresa artesanal e cebola roxa.', 'price' => 56.00, 'image' => 'https://picsum.photos/seed/pb-calab/600/600'],
-                    ['id' => 'pb_refri', 'name' => 'Refrigerante 2L', 'description' => 'Refrigerante gelado para acompanhar.', 'price' => 12.00, 'image' => 'https://picsum.photos/seed/pb-refri/600/600'],
-                ],
-            ],
-            'poke_wave' => [
-                'id' => 'poke_wave',
-                'title' => 'Poke Wave',
-                'description' => 'Pokes frescos, leves e montados na hora.',
-                'rating' => '4.9',
-                'distance' => '3,1 km',
-                'shipping' => 'Frete Gratis',
-                'eta' => '20-30 min',
-                'image' => 'https://picsum.photos/seed/poke-wave/600/600',
-                'tags' => ['poke', 'saudavel', 'japones', 'fit'],
-                'products' => [
-                    ['id' => 'pw_salmao', 'name' => 'Poke de Salmao', 'description' => 'Salmao, arroz gohan e molho citrus.', 'price' => 41.90, 'image' => 'https://picsum.photos/seed/pw-salmao/600/600'],
-                    ['id' => 'pw_frango', 'name' => 'Poke de Frango', 'description' => 'Frango grelhado, legumes e molho teriyaki.', 'price' => 34.90, 'image' => 'https://picsum.photos/seed/pw-frango/600/600'],
-                    ['id' => 'pw_guarana', 'name' => 'Guarana Zero', 'description' => 'Lata 350ml.', 'price' => 6.90, 'image' => 'https://picsum.photos/seed/pw-guarana/600/600'],
-                ],
-            ],
-            'doceria_mila' => [
-                'id' => 'doceria_mila',
-                'title' => 'Doceria Mila',
-                'description' => 'Sobremesas, brownies e acai cremoso.',
-                'rating' => '4.8',
-                'distance' => '2,0 km',
-                'shipping' => 'Frete R$ 3,99',
-                'eta' => '20-35 min',
-                'image' => 'https://picsum.photos/seed/doceria-mila/600/600',
-                'tags' => ['sobremesa', 'doce', 'brownie', 'acai'],
-                'products' => [
-                    ['id' => 'dm_brownie', 'name' => 'Brownie com Nutella', 'description' => 'Brownie de chocolate com cobertura.', 'price' => 18.90, 'image' => 'https://picsum.photos/seed/dm-brownie/600/600'],
-                    ['id' => 'dm_acai', 'name' => 'Acai 500ml', 'description' => 'Acai cremoso com 3 adicionais.', 'price' => 22.00, 'image' => 'https://picsum.photos/seed/dm-acai/600/600'],
-                    ['id' => 'dm_milk', 'name' => 'Milk-shake Morango', 'description' => 'Shake cremoso 400ml.', 'price' => 19.50, 'image' => 'https://picsum.photos/seed/dm-milk/600/600'],
-                ],
-            ],
-            'sushi_zen' => [
-                'id' => 'sushi_zen',
-                'title' => 'Sushi Zen',
-                'description' => 'Combinados premium e sashimis frescos.',
-                'rating' => '4.7',
-                'distance' => '4,2 km',
-                'shipping' => 'Frete R$ 7,90',
-                'eta' => '35-50 min',
-                'image' => 'https://picsum.photos/seed/sushi-zen/600/600',
-                'tags' => ['japones', 'sushi', 'sashimi', 'jantar'],
-                'products' => [
-                    ['id' => 'sz_combo20', 'name' => 'Combo 20 pecas', 'description' => 'Selecao de uramaki, niguiri e hot roll.', 'price' => 58.00, 'image' => 'https://picsum.photos/seed/sz-combo20/600/600'],
-                    ['id' => 'sz_combo40', 'name' => 'Combo 40 pecas', 'description' => 'Combinado familia com sashimi.', 'price' => 109.00, 'image' => 'https://picsum.photos/seed/sz-combo40/600/600'],
-                    ['id' => 'sz_sake', 'name' => 'Temaki Salmao', 'description' => 'Temaki tradicional de salmao.', 'price' => 26.00, 'image' => 'https://picsum.photos/seed/sz-temaki/600/600'],
-                ],
-            ],
-            'grelha_prime' => [
-                'id' => 'grelha_prime',
-                'title' => 'Grelha Prime',
-                'description' => 'Pratos de carne, frango e acompanhamentos.',
-                'rating' => '4.6',
-                'distance' => '3,6 km',
-                'shipping' => 'Frete R$ 5,99',
-                'eta' => '30-40 min',
-                'image' => 'https://picsum.photos/seed/grelha-prime/600/600',
-                'tags' => ['churrasco', 'carne', 'prato executivo'],
-                'products' => [
-                    ['id' => 'gp_picanha', 'name' => 'Picanha na Chapa', 'description' => 'Picanha com arroz, fritas e farofa.', 'price' => 67.90, 'image' => 'https://picsum.photos/seed/gp-picanha/600/600'],
-                    ['id' => 'gp_frango', 'name' => 'Frango Grelhado', 'description' => 'Peito grelhado e legumes salteados.', 'price' => 39.90, 'image' => 'https://picsum.photos/seed/gp-frango/600/600'],
-                    ['id' => 'gp_limo', 'name' => 'Limonada 500ml', 'description' => 'Limonada natural gelada.', 'price' => 8.50, 'image' => 'https://picsum.photos/seed/gp-limo/600/600'],
-                ],
-            ],
-            'pastel_do_zeca' => [
-                'id' => 'pastel_do_zeca',
-                'title' => 'Pastel do Zeca',
-                'description' => 'Pasteis sequinhos, caldo de cana e porcoes.',
-                'rating' => '4.9',
-                'distance' => '1,2 km',
-                'shipping' => 'Frete Gratis',
-                'eta' => '15-25 min',
-                'image' => 'https://picsum.photos/seed/pastel-do-zeca/600/600',
-                'tags' => ['pastel', 'feira', 'salgado', 'lanche', 'pastelaria'],
-                'products' => [
-                    ['id' => 'pz_carne', 'name' => 'Pastel de Carne', 'description' => 'Massa crocante com recheio de carne temperada.', 'price' => 12.90, 'image' => 'https://picsum.photos/seed/pz-carne/600/600'],
-                    ['id' => 'pz_queijo', 'name' => 'Pastel de Queijo', 'description' => 'Queijo derretido e massa dourada.', 'price' => 11.90, 'image' => 'https://picsum.photos/seed/pz-queijo/600/600'],
-                    ['id' => 'pz_frango', 'name' => 'Pastel de Frango com Catupiry', 'description' => 'Frango desfiado com catupiry cremoso.', 'price' => 13.90, 'image' => 'https://picsum.photos/seed/pz-frango/600/600'],
-                    ['id' => 'pz_pizza', 'name' => 'Pastel de Pizza', 'description' => 'Tomate, muzzarela e oregano.', 'price' => 13.90, 'image' => 'https://picsum.photos/seed/pz-pizza/600/600'],
-                    ['id' => 'pz_caldo', 'name' => 'Caldo de Cana 500ml', 'description' => 'Caldo de cana natural e gelado.', 'price' => 9.00, 'image' => 'https://picsum.photos/seed/pz-caldo/600/600'],
-                    ['id' => 'pz_porcao', 'name' => 'Porcao de Coxinha (6un)', 'description' => 'Coxinhas crocantes de frango.', 'price' => 22.00, 'image' => 'https://picsum.photos/seed/pz-porcao/600/600'],
-                ],
-            ],
-            'pastel_da_dona_maria' => [
-                'id' => 'pastel_da_dona_maria',
-                'title' => 'Pastel da Dona Maria',
-                'description' => 'Receita de familia, pastel artesanal na chapa.',
-                'rating' => '4.8',
-                'distance' => '1,9 km',
-                'shipping' => 'Frete Gratis',
-                'eta' => '20-30 min',
-                'image' => 'https://picsum.photos/seed/pastel-dona-maria/600/600',
-                'tags' => ['pastel', 'pastelaria', 'salgado', 'artesanal'],
-                'products' => [
-                    ['id' => 'dm2_carne', 'name' => 'Pastel de Carne Artesanal', 'description' => 'Carne moida com batata e temperinhos da Dona Maria.', 'price' => 14.90, 'image' => 'https://picsum.photos/seed/dm2-carne/600/600'],
-                    ['id' => 'dm2_camarao', 'name' => 'Pastel de Camarao', 'description' => 'Camarao salteado com requeijao.', 'price' => 18.90, 'image' => 'https://picsum.photos/seed/dm2-camarao/600/600'],
-                    ['id' => 'dm2_palmito', 'name' => 'Pastel de Palmito', 'description' => 'Palmito pupunha com muzzarela.', 'price' => 13.90, 'image' => 'https://picsum.photos/seed/dm2-palmito/600/600'],
-                    ['id' => 'dm2_suco', 'name' => 'Suco de Laranja 400ml', 'description' => 'Laranja espremida na hora.', 'price' => 10.00, 'image' => 'https://picsum.photos/seed/dm2-suco/600/600'],
-                ],
-            ],
-            'pastelao_express' => [
-                'id' => 'pastelao_express',
-                'title' => 'Pastelao Express',
-                'description' => 'Pasteis gigantes e combos completos.',
-                'rating' => '4.7',
-                'distance' => '2,5 km',
-                'shipping' => 'Frete R$ 3,99',
-                'eta' => '20-30 min',
-                'image' => 'https://picsum.photos/seed/pastelao-express/600/600',
-                'tags' => ['pastel', 'pastelao', 'pastelaria', 'salgado', 'combo'],
-                'products' => [
-                    ['id' => 'pe_gigante', 'name' => 'Pastelao de Carne', 'description' => 'Pastel tamanho gigante com carne temperada.', 'price' => 22.90, 'image' => 'https://picsum.photos/seed/pe-gigante/600/600'],
-                    ['id' => 'pe_combo', 'name' => 'Combo 3 Pasteis + Caldo', 'description' => '3 pasteis a escolha + caldo de cana 500ml.', 'price' => 39.90, 'image' => 'https://picsum.photos/seed/pe-combo/600/600'],
-                    ['id' => 'pe_mini', 'name' => 'Mini Pasteis (10un)', 'description' => 'Mix de sabores em versao mini.', 'price' => 29.90, 'image' => 'https://picsum.photos/seed/pe-mini/600/600'],
-                ],
-            ],
-            'taco_loco' => [
-                'id' => 'taco_loco',
-                'title' => 'Taco Loco',
-                'description' => 'Comida mexicana com burritos e nachos.',
-                'rating' => '4.7',
-                'distance' => '2,9 km',
-                'shipping' => 'Frete R$ 6,49',
-                'eta' => '30-40 min',
-                'image' => 'https://picsum.photos/seed/taco-loco/600/600',
-                'tags' => ['mexicano', 'taco', 'burrito', 'nachos'],
-                'products' => [
-                    ['id' => 'tl_taco', 'name' => 'Taco de Frango', 'description' => 'Tortilha crocante com frango e guacamole.', 'price' => 21.90, 'image' => 'https://picsum.photos/seed/tl-taco/600/600'],
-                    ['id' => 'tl_burrito', 'name' => 'Burrito de Carne', 'description' => 'Burrito recheado com carne e feijao.', 'price' => 29.90, 'image' => 'https://picsum.photos/seed/tl-burrito/600/600'],
-                    ['id' => 'tl_nachos', 'name' => 'Nachos Supreme', 'description' => 'Nachos com cheddar, chili e jalapeno.', 'price' => 26.50, 'image' => 'https://picsum.photos/seed/tl-nachos/600/600'],
-                ],
-            ],
-            'veg_garden' => [
-                'id' => 'veg_garden',
-                'title' => 'Veg Garden',
-                'description' => 'Pratos vegetarianos e opcoes veganas.',
-                'rating' => '4.8',
-                'distance' => '3,3 km',
-                'shipping' => 'Frete Gratis',
-                'eta' => '25-35 min',
-                'image' => 'https://picsum.photos/seed/veg-garden/600/600',
-                'tags' => ['vegano', 'vegetariano', 'saudavel', 'salada'],
-                'products' => [
-                    ['id' => 'vg_bowl', 'name' => 'Bowl Proteico', 'description' => 'Graos, legumes e molho de tahine.', 'price' => 33.90, 'image' => 'https://picsum.photos/seed/vg-bowl/600/600'],
-                    ['id' => 'vg_wrap', 'name' => 'Wrap Vegano', 'description' => 'Wrap integral com falafel e salada.', 'price' => 27.90, 'image' => 'https://picsum.photos/seed/vg-wrap/600/600'],
-                    ['id' => 'vg_suco', 'name' => 'Suco Verde', 'description' => 'Couve, maca e gengibre.', 'price' => 12.90, 'image' => 'https://picsum.photos/seed/vg-suco/600/600'],
-                ],
-            ],
-            'shawarma_house' => [
-                'id' => 'shawarma_house',
-                'title' => 'Shawarma House',
-                'description' => 'Esfihas, shawarma e cozinha arabe.',
-                'rating' => '4.8',
-                'distance' => '2,7 km',
-                'shipping' => 'Frete R$ 4,49',
-                'eta' => '25-40 min',
-                'image' => 'https://picsum.photos/seed/shawarma-house/600/600',
-                'tags' => ['arabe', 'shawarma', 'esfiha', 'kibe'],
-                'products' => [
-                    ['id' => 'sh_shawarma', 'name' => 'Shawarma de Frango', 'description' => 'Pao folha com frango e molho garlic.', 'price' => 24.90, 'image' => 'https://picsum.photos/seed/sh-shawarma/600/600'],
-                    ['id' => 'sh_esfiha', 'name' => 'Esfiha de Carne', 'description' => 'Massa macia com recheio de carne.', 'price' => 8.90, 'image' => 'https://picsum.photos/seed/sh-esfiha/600/600'],
-                    ['id' => 'sh_kibe', 'name' => 'Kibe Frito', 'description' => 'Porcao com 6 unidades.', 'price' => 19.90, 'image' => 'https://picsum.photos/seed/sh-kibe/600/600'],
-                ],
-            ],
-        ];
-    }
 
     private function searchStoreIds(string $query): array
     {
-        $catalog = $this->storesCatalog();
-        $normalizedQuery = Str::of($query)->lower()->ascii()->toString();
+        $normalizedQuery = trim((string) Str::of($query)->lower()->ascii()->toString());
 
-        if (trim($normalizedQuery) === '') {
-            return array_keys($catalog);
-        }
+        $storesQuery = Store::query()
+            ->where('is_active', true)
+            ->with('category:id,name,slug');
 
-        $matches = [];
+        if ($normalizedQuery !== '') {
+            $tokens = array_values(array_filter(explode(' ', $normalizedQuery)));
 
-        foreach ($catalog as $storeId => $store) {
-            $haystacks = [
-                Str::of($store['title'])->lower()->ascii()->toString(),
-                Str::of($store['description'])->lower()->ascii()->toString(),
-            ];
+            foreach ($tokens as $token) {
+                $storesQuery->where(function ($builder) use ($token): void {
+                    $like = '%'.$token.'%';
 
-            foreach ($store['tags'] as $tag) {
-                $haystacks[] = Str::of((string) $tag)->lower()->ascii()->toString();
-            }
-
-            foreach ($haystacks as $haystack) {
-                if (str_contains($haystack, $normalizedQuery)) {
-                    $matches[] = $storeId;
-                    break;
-                }
+                    $builder
+                        ->whereRaw('LOWER(name) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(slug) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(description) LIKE ?', [$like])
+                        ->orWhereRaw('LOWER(segment) LIKE ?', [$like])
+                        ->orWhereHas('category', fn ($categoryBuilder) => $categoryBuilder->whereRaw('LOWER(name) LIKE ?', [$like]));
+                });
             }
         }
 
-        return $matches;
+        return $storesQuery
+            ->orderBy('name')
+            ->pluck('slug')
+            ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
+            ->values()
+            ->all();
     }
 
     private function searchStoreIdsByTags(array $tags): array
     {
         if ($tags === []) {
-            return array_keys($this->storesCatalog());
+            return Store::query()
+                ->where('is_active', true)
+                ->orderBy('name')
+                ->pluck('slug')
+                ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
+                ->values()
+                ->all();
         }
 
-        $catalog = $this->storesCatalog();
-        $normalizedTags = array_map(
+        $query = implode(' ', array_map(
             fn (mixed $tag): string => Str::of((string) $tag)->lower()->ascii()->toString(),
             $tags
-        );
+        ));
 
-        $matches = [];
-
-        foreach ($catalog as $storeId => $store) {
-            $storeTags = array_map(
-                fn (mixed $tag): string => Str::of((string) $tag)->lower()->ascii()->toString(),
-                $store['tags']
-            );
-
-            if (count(array_intersect($normalizedTags, $storeTags)) > 0) {
-                $matches[] = $storeId;
-            }
-        }
-
-        return $matches;
+        return $this->searchStoreIds($query);
     }
 
     private function normalizeText(string $text): string

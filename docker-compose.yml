@@ -64,6 +64,28 @@ services:
     networks:
       - delivery-net
 
+  worker:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: ${UID:-1000}
+        GID: ${GID:-1000}
+    container_name: deliveryzapapi-worker
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: php artisan queue:work --sleep=3 --tries=3 --timeout=60
+    volumes:
+      - ./:/var/www/html
+    environment:
+      APP_ENV: local
+      APP_DEBUG: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - delivery-net
+
   ngrok:
     image: ngrok/ngrok:latest
     container_name: deliveryzapapi-ngrok

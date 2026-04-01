@@ -20,6 +20,7 @@ class StoreIdentityRequest extends FormRequest
             'phone' => ['nullable', 'string', 'max:30'],
             'whatsapp_phone' => ['required', 'string', 'max:30'],
             'segment' => ['nullable', 'string', 'max:80'],
+            'category_id' => ['nullable', 'integer', 'exists:categories,id'],
             'description' => ['nullable', 'string', 'max:500'],
         ];
     }

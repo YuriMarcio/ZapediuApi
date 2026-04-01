@@ -13,8 +13,9 @@ class ZapiWebhookController extends Controller
 {
     public function __invoke(ZapiWebhookRequest $request, TenantContext $tenant)
     {
-        $payload = $request->validated();
-        $company = $this->resolveCompany($payload);
+        $validated = $request->validated();
+        $payload = $request->all();
+        $company = $this->resolveCompany($validated);
         $expectedToken = $company?->zapi_webhook_token ?: (string) config('services.zapi.webhook_token');
         $mustValidateToken = $expectedToken !== '' && $expectedToken !== 'change-me';
 

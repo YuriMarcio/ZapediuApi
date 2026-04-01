@@ -15,12 +15,15 @@ class Category extends Model
         'company_id',
         'name',
         'slug',
+        'image_url',
+        'ordem_exibicao',
         'color',
         'is_active',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
+        'ordem_exibicao' => 'integer',
     ];
 
     public static function boot(): void
@@ -43,5 +46,10 @@ class Category extends Model
     public function products(): HasMany
     {
         return $this->hasMany(Product::class);
+    }
+
+    public function stores(): HasMany
+    {
+        return $this->hasMany(Store::class);
     }
 }

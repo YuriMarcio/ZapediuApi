@@ -37,6 +37,56 @@ class ZapiClient
         return $this->decodeResponse($response);
     }
 
+    public function sendButtonList(string $phone, string $message, array $buttons): array
+    {
+        $path = $this->endpointPath('/send-button-list');
+
+        $response = $this->http()
+            ->post($path, [
+                'phone' => $phone,
+                'message' => $message,
+                'buttonList' => [
+                    'buttons' => array_values(array_map(
+                        fn (array $button): array => [
+                            'id' => (string) ($button['id'] ?? ''),
+                            'label' => (string) ($button['label'] ?? ''),
+                        ],
+                        $buttons
+                    )),
+                ],
+            ])
+            ->throw();
+
+        return $this->decodeResponse($response);
+    }
+
+    public function sendButtonActions(string $phone, string $message, array $buttons, ?string $title = null, ?string $footer = null): array
+    {
+        $path = $this->endpointPath('/send-button-actions');
+
+        $response = $this->http()
+            ->post($path, array_filter([
+                'phone' => $phone,
+                'message' => $message,
+                'title' => $title,
+                'footer' => $footer,
+                'buttonActions' => array_values(array_map(
+                    fn (array $button): array => array_filter([
+                        'id' => $button['id'] ?? null,
+                        'type' => $button['type'] ?? 'REPLY',
+                        'label' => $button['label'] ?? '',
+                        'phone' => $button['phone'] ?? null,
+                        'url' => $button['url'] ?? null,
+                    ], fn (mixed $value): bool => $value !== null),
+                    $buttons
+                )),
+            ], fn (mixed $value): bool => $value !== null));
+
+        $response->throw();
+
+        return $this->decodeResponse($response);
+    }
+
     public function sendList(
         string $phone,
         string $message,
