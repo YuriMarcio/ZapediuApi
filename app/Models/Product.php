@@ -27,12 +27,15 @@ class Product extends Model implements HasMedia
         'price',
         'stock_quantity',
         'is_active',
+        'has_variations',
+        'variation_question',
     ];
 
     protected $casts = [
         'price' => 'decimal:2',
         'stock_quantity' => 'integer',
         'is_active' => 'boolean',
+        'has_variations' => 'boolean',
     ];
 
     protected $appends = [

@@ -16,6 +16,7 @@ class ProductVariation extends Model
         'name',
         'sku',
         'price',
+        'additional_price',
         'stock_quantity',
         'attributes',
         'is_default',
@@ -24,6 +25,7 @@ class ProductVariation extends Model
 
     protected $casts = [
         'price' => 'decimal:2',
+        'additional_price' => 'decimal:2',
         'stock_quantity' => 'integer',
         'attributes' => 'array',
         'is_default' => 'boolean',

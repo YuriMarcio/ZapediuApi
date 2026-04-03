@@ -2,14 +2,20 @@
 
 namespace App\Services\Zapi;
 
+use App\Jobs\Whatsapp\SendCartFeedbackJob;
 use App\Models\Category;
 use App\Models\Delivery;
+use App\Models\Order;
+use App\Models\OrderItem;
 use App\Models\Product;
+use App\Models\ProductVariation;
 use App\Models\Store;
+use App\Models\User;
 use App\Models\WebhookEvent;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 
 class ZapiWebhookService
@@ -118,11 +124,59 @@ class ZapiWebhookService
             return false;
         }
 
+        // Hard reset: apaga toda a sessão
+        if ($normalizedText === 'limpar') {
+            Cache::forget(self::FLOW_STATE_CACHE_PREFIX.$phone);
+
+            try {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "🗑️ Sessão resetada com sucesso!\n\nDigite *oi* para começar de novo. 😄"
+                );
+
+                return true;
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        // Checkout flow interception
+        $checkoutStep = (string) ($state['checkout_step'] ?? '');
+        if (in_array($checkoutStep, ['verify_email_lookup', 'verify_email_code', 'collect_name', 'collect_address', 'collect_reference', 'collect_email', 'change_address', 'confirm_data', 'checkout_summary'], true)) {
+            return $this->handleCheckoutTextInput($phone, $messageText, $normalizedText, $checkoutStep);
+        }
+
+        // Mid-flow interception: pending variation choice (products with variations)
+        $pending = $state['pending_add'] ?? null;
+        if (is_array($pending) && ($pending['step'] ?? '') === 'variation') {
+            // Variation is chosen via buttons; if customer types here, guide them
+            try {
+                $this->zapiClient->sendText($phone, '👆 Por favor, escolha uma das opções de variação disponíveis acima.');
+
+                return true;
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
         if (($state['welcomed'] ?? false) !== true) {
             $state['welcomed'] = true;
             $this->saveFlowState($phone, $state);
 
             return $this->sendWelcomePrompt($phone);
+        }
+
+        // If a navigation keyword is typed while the observation window is open, close it.
+        $isNavigationKeyword = in_array($normalizedText, [
+            'carrinho', 'finalizar', 'checkout', 'pagar',
+            'voltar', 'voltar lojas', 'trocar loja', 'outra loja',
+            'oi', 'ola', 'oie', 'menu', 'inicio', 'start',
+            'ver categorias', 'categorias', 'ver lojas', 'lojas', 'mostrar lojas',
+        ], true);
+
+        if ($isNavigationKeyword && isset($state['last_added_cart_index'])) {
+            unset($state['last_added_cart_index']);
+            $this->saveFlowState($phone, $state);
         }
 
         if ($normalizedText === 'carrinho') {
@@ -185,6 +239,32 @@ class ZapiWebhookService
             return $this->sendCategoryList($phone);
         }
 
+        // Observation window: if the customer just added an item and types free text,
+        // save it as the observation for that item (one text message = one observation).
+        $lastAddedIndex = $state['last_added_cart_index'] ?? null;
+        if ($lastAddedIndex !== null && is_int($lastAddedIndex)) {
+            $cart = $state['cart'] ?? ['items' => []];
+            if (isset($cart['items'][$lastAddedIndex])) {
+                $cart['items'][$lastAddedIndex]['observation'] = trim($messageText);
+                $state['cart'] = $cart;
+                unset($state['last_added_cart_index']);
+                $this->saveFlowState($phone, $state);
+
+                $productName = (string) ($cart['items'][$lastAddedIndex]['product_name'] ?? 'item');
+
+                try {
+                    $this->zapiClient->sendText(
+                        $phone,
+                        "📝 *Observação salva:* _{$messageText}_\nPara: *{$productName}*."
+                    );
+
+                    return true;
+                } catch (\Throwable) {
+                    return false;
+                }
+            }
+        }
+
         return $this->sendStoreSearchResults($phone, $messageText);
     }
 
@@ -208,6 +288,158 @@ class ZapiWebhookService
 
         if ($buttonId === 'flow_home') {
             return $this->sendWelcomePrompt($phone);
+        }
+
+        if (str_starts_with($buttonId, 'flow_variation_')) {
+            return $this->handleVariationSelected($phone, substr($buttonId, strlen('flow_variation_')));
+        }
+
+        // ── New post-add action buttons ────────────────────────────────────
+        if ($buttonId === 'flow_continue_shopping') {
+            $state   = $this->flowState($phone);
+            $storeId = (string) ($state['selected_store_id'] ?? '');
+            unset($state['last_added_cart_index']);
+            $this->saveFlowState($phone, $state);
+
+            if ($storeId !== '') {
+                return $this->sendProductsCarousel($phone, $storeId, 0);
+            }
+
+            return $this->returnToStores($phone);
+        }
+
+        if ($buttonId === 'flow_finalize_order') {
+            $state = $this->flowState($phone);
+            unset($state['last_added_cart_index']);
+            $this->saveFlowState($phone, $state);
+
+            return $this->finalizeCart($phone);
+        }
+
+        // ── Legacy quantity / observation buttons (backward-compat) ────────
+        if ($buttonId === 'flow_obs_continue' || $buttonId === 'flow_skip_obs') {
+            $state = $this->flowState($phone);
+            $storeId = (string) ($state['selected_store_id'] ?? '');
+            unset($state['last_added_cart_index']);
+            $this->saveFlowState($phone, $state);
+
+            if ($storeId !== '') {
+                return $this->sendProductsCarousel($phone, $storeId, 0);
+            }
+
+            return $this->returnToStores($phone);
+        }
+
+        if ($buttonId === 'flow_obs_finalize') {
+            return $this->finalizeCart($phone);
+        }
+
+        if ($buttonId === 'cart_keep_existing') {
+            $state = $this->flowState($phone);
+            unset($state['store_switch_intent']);
+            $this->saveFlowState($phone, $state);
+
+            try {
+                $this->zapiClient->sendText(
+                    $phone,
+                    'Perfeito! Vamos continuar com o carrinho atual. 🛒'
+                );
+            } catch (\Throwable) {
+            }
+
+            return $this->sendCartSummary($phone);
+        }
+
+        if ($buttonId === 'cart_start_new') {
+            $state = $this->flowState($phone);
+            $intent = $state['store_switch_intent'] ?? null;
+
+            if (! is_array($intent)) {
+                return $this->sendCartSummary($phone);
+            }
+
+            $targetStoreId = (string) ($intent['target_store_id'] ?? '');
+            $targetProductId = (string) ($intent['target_product_id'] ?? '');
+
+            if ($targetStoreId === '' || $targetProductId === '') {
+                unset($state['store_switch_intent']);
+                $this->saveFlowState($phone, $state);
+
+                return $this->sendCartSummary($phone);
+            }
+
+            $state['cart'] = ['store_id' => $targetStoreId, 'items' => []];
+            $state['selected_store_id'] = $targetStoreId;
+            unset($state['pending_add'], $state['store_switch_intent']);
+            $this->saveFlowState($phone, $state);
+
+            return $this->startAddProductFlow($phone, $targetStoreId, $targetProductId);
+        }
+
+        if ($buttonId === 'checkout_pay_now_from_cart') {
+            return $this->finalizeCart($phone);
+        }
+
+        if ($buttonId === 'checkout_confirm_data') {
+            return $this->sendOrderSummary($phone);
+        }
+
+        if ($buttonId === 'checkout_confirm_address') {
+            $st = $this->flowState($phone);
+            $st['checkout_step'] = '';
+            $this->saveFlowState($phone, $st);
+
+            return $this->sendOrderSummary($phone);
+        }
+
+        if ($buttonId === 'checkout_change_address') {
+            $st = $this->flowState($phone);
+            $st['checkout_step'] = 'change_address';
+            $this->saveFlowState($phone, $st);
+
+            try {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "📍 Claro! Digite seu novo endereço completo:\n_Ex: Rua das Flores, 123 – Centro, Cidade – UF_"
+                );
+
+                return true;
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        if ($buttonId === 'checkout_skip_reference') {
+            $st = $this->flowState($phone);
+            $st['customer']['reference'] = null;
+            $st['checkout_step'] = ! empty($st['customer']['email']) ? '' : 'collect_email';
+            $this->saveFlowState($phone, $st);
+
+            if (! empty($st['customer']['email'])) {
+                return $this->sendDataConfirmation($phone);
+            }
+
+            try {
+                $this->zapiClient->sendButtonActions($phone, "📧 Informe seu e-mail para receber o comprovante:\n_(opcional)_", [
+                    ['id' => 'checkout_skip_email', 'label' => 'Pular'],
+                ]);
+
+                return true;
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        if ($buttonId === 'checkout_skip_email') {
+            $st = $this->flowState($phone);
+            $st['customer']['email'] = null;
+            $this->saveFlowState($phone, $st);
+
+            return $this->sendDataConfirmation($phone);
+        }
+
+        if ($buttonId === 'checkout_pay_now') {
+            return $this->processPayment($phone);
         }
 
         if ($buttonId === 'flow_cart') {
@@ -245,7 +477,7 @@ class ZapiWebhookService
         $addPayload = $this->resolveAddButtonPayload($buttonId);
 
         if ($addPayload !== null) {
-            return $this->addProductToCart($phone, $addPayload['store_id'], $addPayload['product_id']);
+            return $this->startAddProductFlow($phone, $addPayload['store_id'], $addPayload['product_id'], (int) ($addPayload['quantity'] ?? 1));
         }
 
         return $this->handleCommerceReplyIntent(['buttonId' => $buttonId], $phone, $buttonId);
@@ -253,14 +485,25 @@ class ZapiWebhookService
 
     private function resolveAddButtonPayload(string $buttonId): ?array
     {
-        if (preg_match('/^flow_add_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches) !== 1) {
-            return null;
+        // New format: flow_add{qty}_{store_id}_{product_id}  (qty = 1, 2 or 3 immediately after "flow_add")
+        if (preg_match('/^flow_add([123])_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches) === 1) {
+            return [
+                'store_id'  => $matches[2],
+                'product_id' => $matches[3],
+                'quantity'  => (int) $matches[1],
+            ];
         }
 
-        return [
-            'store_id' => $matches[1],
-            'product_id' => $matches[2],
-        ];
+        // Old/backward-compat format: flow_add_{store_id}_{product_id}
+        if (preg_match('/^flow_add_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches) === 1) {
+            return [
+                'store_id'  => $matches[1],
+                'product_id' => $matches[2],
+                'quantity'  => 1,
+            ];
+        }
+
+        return null;
     }
 
     private function sendWelcomePrompt(string $phone): bool
@@ -541,6 +784,11 @@ class ZapiWebhookService
         return $etas[$seed % count($etas)];
     }
 
+    private function buildStoreDeliveryFee(Store $store): float
+    {
+        return 8.00;
+    }
+
     private function selectStore(string $phone, string $storeId): bool
     {
         $store = Store::query()
@@ -595,11 +843,9 @@ class ZapiWebhookService
                     ?? (is_string($product->image_path) && $product->image_path !== '' ? $product->image_path : null)
                     ?? 'https://picsum.photos/seed/produto-'.(int) $product->id.'/600/600',
                 'buttons' => [
-                    [
-                        'id' => 'flow_add_'.$store->slug.'_'.(int) $product->id,
-                        'label' => '➕ Adicionar.',
-                        'type' => 'REPLY',
-                    ],
+                    ['id' => 'flow_add1_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 1', 'type' => 'REPLY'],
+                    ['id' => 'flow_add2_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 2', 'type' => 'REPLY'],
+                    ['id' => 'flow_add3_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 3', 'type' => 'REPLY'],
                 ],
             ];
         }
@@ -647,7 +893,11 @@ class ZapiWebhookService
         }
     }
 
-    private function addProductToCart(string $phone, string $storeId, string $productId): bool
+    // ──────────────────────────────────────────────────────────────────────────
+    // Add-to-cart flow: variation (if applicable) → immediate commit
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private function startAddProductFlow(string $phone, string $storeId, string $productId, int $quantity = 1): bool
     {
         $store = Store::query()
             ->where('is_active', true)
@@ -659,6 +909,7 @@ class ZapiWebhookService
         }
 
         $product = Product::query()
+            ->with('variations')
             ->where('is_active', true)
             ->where('store_id', $store->id)
             ->where('id', (int) $productId)
@@ -668,37 +919,403 @@ class ZapiWebhookService
             return false;
         }
 
+        // Check for active variations
+        $variations = $product->variations
+            ->filter(fn (ProductVariation $v): bool => (bool) $v->is_active)
+            ->values();
+
+        if ($variations->isEmpty() || ! (bool) $product->has_variations) {
+            // No variations: commit immediately with the chosen quantity
+            return $this->commitAndSendFeedback($phone, $storeId, (int) $productId, null, null, 0.0, $quantity);
+        }
+
+        // Has variations: store quantity in pending_add and ask the customer to choose
+        $state = $this->flowState($phone);
+
+        $cart = $state['cart'] ?? ['store_id' => null, 'items' => []];
+        if (($cart['store_id'] ?? null) !== null
+            && $cart['store_id'] !== $storeId
+            && is_array($cart['items'] ?? null)
+            && $cart['items'] !== []) {
+            return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, (int) $productId);
+        }
+
+        $state['pending_add'] = [
+            'store_id'                   => $storeId,
+            'product_id'                 => (int) $productId,
+            'step'                       => 'variation',
+            'variation_id'               => null,
+            'variation_name'             => null,
+            'variation_additional_price' => 0.0,
+            'quantity'                   => $quantity,
+        ];
+        $this->saveFlowState($phone, $state);
+
+
+        return $this->sendVariationPrompt($phone, $product, $variations);
+    }
+
+    private function sendVariationPrompt(string $phone, Product $product, $variations): bool
+    {
+        $question = trim((string) ($product->variation_question ?: 'Como você prefere?'));
+
+        $buttons = $variations->take(3)->map(fn (ProductVariation $v): array => [
+            'id'    => 'flow_variation_'.(int) $v->id,
+            'label' => $v->name.(
+                ((float) $v->additional_price) > 0
+                    ? ' (+R$ '.number_format((float) $v->additional_price, 2, ',', '.').')'
+                    : ''
+            ),
+        ])->values()->all();
+
+        // >3 variations: use option list; ≤3: use button actions
+        if ($variations->count() > 3) {
+            $options = $variations->map(fn (ProductVariation $v): array => [
+                'id'          => 'flow_variation_'.(int) $v->id,
+                'title'       => $v->name,
+                'description' => ((float) $v->additional_price) > 0
+                    ? '+R$ '.number_format((float) $v->additional_price, 2, ',', '.')
+                    : '',
+            ])->values()->all();
+
+            try {
+                $this->zapiClient->sendList(
+                    $phone,
+                    $question,
+                    'Ver opções',
+                    $product->name,
+                    '',
+                    $options
+                );
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send variation list.', ['error' => $exception->getMessage()]);
+
+                return false;
+            }
+        }
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $question, $buttons);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send variation buttons.', ['error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    private function handleVariationSelected(string $phone, string $variationId): bool
+    {
+        $state = $this->flowState($phone);
+        $pending = $state['pending_add'] ?? null;
+
+        if (! is_array($pending)) {
+            return false;
+        }
+
+        $variation = ProductVariation::query()
+            ->where('id', (int) $variationId)
+            ->where('is_active', true)
+            ->first();
+
+        if ($variation === null) {
+            return false;
+        }
+
+        $pending['variation_id']               = (int) $variationId;
+        $pending['variation_name']             = (string) $variation->name;
+        $pending['variation_additional_price'] = (float) $variation->additional_price;
+
+        $quantity = (int) ($pending['quantity'] ?? 1);
+
+        // Clear pending_add before committing so concurrent clicks are handled cleanly
+        unset($state['pending_add']);
+        $this->saveFlowState($phone, $state);
+
+        return $this->commitAndSendFeedback(
+            $phone,
+            (string) ($pending['store_id'] ?? ''),
+            (int) ($pending['product_id'] ?? 0),
+            (int) $variationId,
+            (string) $variation->name,
+            (float) $variation->additional_price,
+            $quantity
+        );
+    }
+
+    /**
+     * Add item to cart (with a per-phone lock to prevent concurrent writes) and
+     * send a feedback message that includes a full cart summary and an observation hint.
+     */
+    private function commitAndSendFeedback(
+        string $phone,
+        string $storeId,
+        int $productId,
+        ?int $variationId,
+        ?string $variationName,
+        float $variationAdditionalPrice,
+        int $quantity
+    ): bool {
+        $lock = Cache::lock('zapi:cart:lock:'.$phone, 10);
+
+        $product = null;
+
+        try {
+            $lock->block(5);
+
+            $store = Store::query()->where('is_active', true)->where('slug', $storeId)->first();
+            if ($store === null) {
+                return false;
+            }
+
+            $product = Product::query()
+                ->where('is_active', true)
+                ->where('store_id', $store->id)
+                ->where('id', $productId)
+                ->first();
+
+            if ($product === null) {
+                return false;
+            }
+
+            // Re-read state inside the lock so racing adds are serialised
+            $state = $this->flowState($phone);
+            $cart  = $state['cart'] ?? ['store_id' => null, 'items' => []];
+
+            if (($cart['store_id'] ?? null) !== null
+                && $cart['store_id'] !== $storeId
+                && is_array($cart['items'] ?? null)
+                && $cart['items'] !== []) {
+                $lock->release();
+
+                return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, $productId);
+            }
+
+            if (! isset($cart['items']) || ! array_is_list((array) $cart['items'])) {
+                $cart['items'] = [];
+            }
+
+            $cart['store_id'] = $storeId;
+            $cart['items'][]  = [
+                'product_id'       => $productId,
+                'product_name'     => (string) $product->name,
+                'base_price'       => (float) $product->price,
+                'variation_id'     => $variationId,
+                'variation_name'   => $variationName,
+                'additional_price' => $variationAdditionalPrice,
+                'quantity'         => $quantity,
+                'observation'      => null,
+            ];
+
+            $newItemIndex = count($cart['items']) - 1;
+
+            $state['cart']                   = $cart;
+            $state['selected_store_id']      = $storeId;
+            $state['last_added_cart_index']  = $newItemIndex;
+            unset($state['pending_add']);
+
+            $this->saveFlowState($phone, $state);
+        } catch (\Throwable $e) {
+            Log::warning('commitAndSendFeedback: cart lock/write failed.', [
+                'phone' => $phone,
+                'error' => $e->getMessage(),
+            ]);
+
+            return false;
+        } finally {
+            optional($lock)->release();
+        }
+
+        // ── Debounce: increment nonce and schedule a delayed feedback ──────
+        $nonceKey = 'zapi:feedback:nonce:'.$phone;
+        $nonce    = (int) Cache::increment($nonceKey);
+        Cache::put($nonceKey, $nonce, now()->addMinutes(5));
+
+        SendCartFeedbackJob::dispatch($phone, $nonce)
+            ->delay(now()->addSeconds(3));
+
+        return true;
+    }
+
+    /**
+     * Called by SendCartFeedbackJob after the debounce window.
+     * Reads the current cart from state and sends one consolidated feedback message.
+     */
+    public function sendCartFeedbackNow(string $phone): void
+    {
+        $state = $this->flowState($phone);
+        $cart  = $state['cart'] ?? ['store_id' => null, 'items' => []];
+
+        $cartItems = $this->normalizeCartItems($cart['items'] ?? []);
+
+        if ($cartItems === []) {
+            return;
+        }
+
+        $summaryLines = [];
+        $cartTotal    = 0.0;
+
+        foreach ($cartItems as $item) {
+            $itemLabel = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
+            $itemUnit  = ($item['base_price'] + $item['additional_price']);
+            $itemTotal = $itemUnit * $item['quantity'];
+            $cartTotal += $itemTotal;
+            $summaryLines[] = '• '.$item['quantity'].'x *'.$itemLabel.'* — R$ '.number_format($itemTotal, 2, ',', '.');
+        }
+
+        $count = count($cartItems);
+        $header = $count === 1
+            ? '✅ *1 item* no carrinho'
+            : "✅ *{$count} itens* no carrinho";
+
+        $message = "{$header}\n"
+            ."——————————————\n"
+            ."🛒 *Seu carrinho:*\n"
+            .implode("\n", $summaryLines)."\n"
+            ."💰 *Total: R\$ ".number_format($cartTotal, 2, ',', '.')."*\n"
+            ."——————————————\n"
+            ."💬 Quer adicionar uma observação no último item?\n"
+            ."_Ex: sem cebola, sem molho, bem passado…_\n"
+            ."_Só digitar agora._\n\n"
+            ."🛍️ Pode continuar escolhendo na lista de produtos acima.";
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'flow_finalize_order', 'label' => '✅ Finalizar pedido'],
+            ]);
+        } catch (\Throwable $exception) {
+            Log::warning('sendCartFeedbackNow: failed to send feedback.', [
+                'phone' => $phone,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    private function commitCartItem(
+        string $phone,
+        string $storeId,
+        int $productId,
+        ?int $variationId,
+        ?string $variationName,
+        float $variationAdditionalPrice,
+        int $quantity,
+        ?string $observation,
+        bool $silent = false
+    ): bool {
+        $store = Store::query()->where('is_active', true)->where('slug', $storeId)->first();
+
+        if ($store === null) {
+            return false;
+        }
+
+        $product = Product::query()
+            ->where('is_active', true)
+            ->where('store_id', $store->id)
+            ->where('id', $productId)
+            ->first();
+
+        if ($product === null) {
+            return false;
+        }
+
         $state = $this->flowState($phone);
         $cart = $state['cart'] ?? ['store_id' => null, 'items' => []];
-        $switchedStore = false;
+        if (($cart['store_id'] ?? null) !== null
+            && $cart['store_id'] !== $storeId
+            && is_array($cart['items'] ?? null)
+            && $cart['items'] !== []) {
+            return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, $productId);
+        }
 
-        if (($cart['store_id'] ?? null) !== null && $cart['store_id'] !== $storeId) {
-            $cart = ['store_id' => $storeId, 'items' => []];
-            $switchedStore = true;
+        // Ensure items is an indexed array
+        if (! isset($cart['items']) || ! array_is_list((array) $cart['items'])) {
+            $cart['items'] = [];
         }
 
         $cart['store_id'] = $storeId;
-        $cart['items'][$productId] = (int) ($cart['items'][$productId] ?? 0) + 1;
+        $cart['items'][]  = [
+            'product_id'        => $productId,
+            'product_name'      => (string) $product->name,
+            'base_price'        => (float) $product->price,
+            'variation_id'      => $variationId,
+            'variation_name'    => $variationName,
+            'additional_price'  => $variationAdditionalPrice,
+            'quantity'          => $quantity,
+            'observation'       => $observation,
+        ];
 
-        $state['cart'] = $cart;
+        $state['cart']              = $cart;
         $state['selected_store_id'] = $storeId;
+        unset($state['pending_add']);
         $this->saveFlowState($phone, $state);
 
-        $notice = $switchedStore
-            ? 'Seu carrinho foi reiniciado porque cada carrinho aceita produtos de apenas uma loja.\n\n'
-            : '';
+        $label = $product->name.($variationName ? ' ('.$variationName.')' : '');
+        $notice = '';
 
-        $message = $notice.'Produto adicionado: '.$product->name.'.\nDigite "carrinho" para revisar, "finalizar" para pagar ou "voltar lojas" para trocar de loja.';
+        if ($silent) {
+            return true;
+        }
+
+        $unitPrice = ((float) $product->price) + $variationAdditionalPrice;
+        $lineTotal = $unitPrice * $quantity;
+
+        $message = $notice.'✅ *'.$label.'* adicionado ao carrinho!'
+            ."\n📦 Adicionado ao carrinho: {$quantity}x {$product->name} no valor de R$ ".number_format($lineTotal, 2, ',', '.')
+            .($observation ? "\n📝 Obs: *{$observation}*" : '')
+            ."\n\nDigite *carrinho* para revisar, *finalizar* para pagar ou continue escolhendo!";
 
         try {
             $this->zapiClient->sendText($phone, $message);
 
             return true;
         } catch (\Throwable $exception) {
-            Log::warning('Failed to send add-to-cart response.', [
-                'phone' => $phone,
-                'store_id' => $storeId,
+            Log::warning('Failed to send commit-cart response.', [
+                'phone'      => $phone,
+                'store_id'   => $storeId,
                 'product_id' => $productId,
+                'error'      => $exception->getMessage(),
+            ]);
+
+            return false;
+        }
+    }
+
+    private function sendCartStoreConflictPrompt(string $phone, string $currentStoreId, string $targetStoreId, int $targetProductId): bool
+    {
+        $state = $this->flowState($phone);
+
+        $currentStoreName = (string) (Store::query()->where('slug', $currentStoreId)->value('name') ?? 'loja atual');
+        $targetStoreName = (string) (Store::query()->where('slug', $targetStoreId)->value('name') ?? 'nova loja');
+
+        $state['store_switch_intent'] = [
+            'current_store_id' => $currentStoreId,
+            'target_store_id' => $targetStoreId,
+            'target_product_id' => (string) $targetProductId,
+        ];
+        unset($state['pending_add']);
+        $this->saveFlowState($phone, $state);
+
+        $message = "⚠️ Seu carrinho atual é da loja *{$currentStoreName}*.\n"
+            ."Não é possível misturar produtos de lojas diferentes.\n\n"
+            ."Você prefere:\n"
+            ."• continuar com o carrinho atual\n"
+            ."• ou montar um novo carrinho na loja *{$targetStoreName}*?";
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'cart_keep_existing', 'label' => '🛒 Seguir carrinho atual'],
+                ['id' => 'cart_start_new', 'label' => '✨ Novo carrinho desta loja'],
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send store-conflict prompt.', [
+                'phone' => $phone,
+                'current_store_id' => $currentStoreId,
+                'target_store_id' => $targetStoreId,
                 'error' => $exception->getMessage(),
             ]);
 
@@ -775,6 +1392,7 @@ class ZapiWebhookService
         };
     }
 
+
     private function sendCartSummary(string $phone): bool
     {
         $state = $this->flowState($phone);
@@ -782,14 +1400,11 @@ class ZapiWebhookService
 
         if (! is_array($cart) || ! is_array($cart['items'] ?? null) || $cart['items'] === []) {
             try {
-                $this->zapiClient->sendText($phone, 'Seu carrinho esta vazio. Escolha uma loja e adicione produtos.');
+                $this->zapiClient->sendText($phone, 'Seu carrinho está vazio. Escolha uma loja e adicione produtos. 🛒');
 
                 return true;
             } catch (\Throwable $exception) {
-                Log::warning('Failed to send empty-cart response.', [
-                    'phone' => $phone,
-                    'error' => $exception->getMessage(),
-                ]);
+                Log::warning('Failed to send empty-cart response.', ['phone' => $phone, 'error' => $exception->getMessage()]);
 
                 return false;
             }
@@ -802,41 +1417,34 @@ class ZapiWebhookService
             return false;
         }
 
-        $productIds = array_map(static fn (string|int $id): int => (int) $id, array_keys($cart['items']));
-        $productsById = Product::query()
-            ->where('store_id', $store->id)
-            ->whereIn('id', $productIds)
-            ->get()
-            ->keyBy('id');
-
-        $lines = ['Carrinho - '.$store->name];
+        $lines = ['🛒 *Carrinho — '.$store->name.'*', ''];
         $total = 0.0;
+        $index = 1;
 
-        foreach ($cart['items'] as $productId => $qty) {
-            $product = $productsById->get($productId);
-
-            if (! $product instanceof Product || $qty < 1) {
-                continue;
-            }
-
-            $lineTotal = ((float) $product->price) * (int) $qty;
+        foreach ($this->normalizeCartItems($cart['items']) as $item) {
+            $lineTotal = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
             $total += $lineTotal;
-            $lines[] = '- '.$qty.'x '.$product->name.' (R$ '.number_format($lineTotal, 2, ',', '.').')';
+            $label = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
+            $lines[] = $index.'. '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            if ($item['observation']) {
+                $lines[] = '   📝 '.$item['observation'];
+            }
+            $index++;
         }
 
         $lines[] = '';
-        $lines[] = 'Total: R$ '.number_format($total, 2, ',', '.');
-        $lines[] = 'Digite "finalizar" para pagar, "voltar lojas" para trocar loja ou continue adicionando produtos.';
+        $lines[] = '💰 *Total: R$ '.number_format($total, 2, ',', '.').'*';
 
         try {
-            $this->zapiClient->sendText($phone, implode("\n", $lines));
+            $this->zapiClient->sendButtonActions(
+                $phone,
+                implode("\n", $lines),
+                [['id' => 'checkout_pay_now_from_cart', 'label' => '🛒 Finalizar pedido']]
+            );
 
             return true;
         } catch (\Throwable $exception) {
-            Log::warning('Failed to send cart summary.', [
-                'phone' => $phone,
-                'error' => $exception->getMessage(),
-            ]);
+            Log::warning('Failed to send cart summary.', ['phone' => $phone, 'error' => $exception->getMessage()]);
 
             return false;
         }
@@ -849,69 +1457,722 @@ class ZapiWebhookService
 
         if (! is_array($cart) || ! is_array($cart['items'] ?? null) || $cart['items'] === []) {
             try {
-                $this->zapiClient->sendText($phone, 'Seu carrinho esta vazio. Adicione produtos antes de finalizar.');
+                $this->zapiClient->sendText($phone, '🛒 Seu carrinho está vazio. Adicione produtos antes de finalizar.');
 
                 return true;
             } catch (\Throwable $exception) {
-                Log::warning('Failed to send finalize-empty-cart response.', [
-                    'phone' => $phone,
-                    'error' => $exception->getMessage(),
-                ]);
+                Log::warning('Failed to send finalize-empty-cart response.', ['phone' => $phone, 'error' => $exception->getMessage()]);
 
                 return false;
             }
         }
 
-        $storeId = (string) ($cart['store_id'] ?? '');
-        $store = Store::query()->where('slug', $storeId)->first();
+        $normalizedPhone = $this->normalizePhoneForLookup($phone);
+        $user = User::query()->where('phone', $normalizedPhone)->first();
 
-        if ($storeId === '' || $store === null) {
-            return false;
-        }
+        if ($user !== null) {
+            $customer = (array) ($state['customer'] ?? []);
+            $customer['name'] = (string) ($customer['name'] ?? $user->name ?? '');
+            $customer['email'] = (string) ($customer['email'] ?? $user->email ?? '');
+            $customer['phone'] = $normalizedPhone;
 
-        $productIds = array_map(static fn (string|int $id): int => (int) $id, array_keys($cart['items']));
-        $productsById = Product::query()
-            ->where('store_id', $store->id)
-            ->whereIn('id', $productIds)
-            ->get()
-            ->keyBy('id');
+            // If address is missing in state, try reusing the latest order address for this phone.
+            if (empty($customer['address'])) {
+                $lastOrder = Order::query()
+                    ->where('customer_phone', $phone)
+                    ->orWhere('customer_phone', $normalizedPhone)
+                    ->orderByDesc('id')
+                    ->first();
 
-        $total = 0.0;
-
-        foreach ($cart['items'] as $productId => $qty) {
-            $product = $productsById->get($productId);
-
-            if (! $product instanceof Product || $qty < 1) {
-                continue;
+                if ($lastOrder !== null) {
+                    $customer['address'] = (string) ($lastOrder->customer_address ?? '');
+                    $customer['reference'] = (string) ($lastOrder->notes ?? '');
+                }
             }
 
-            $total += ((float) $product->price) * (int) $qty;
+            $state['customer'] = $customer;
+            $this->saveFlowState($phone, $state);
+
+            if (! empty($customer['address'])) {
+                return $this->sendAddressConfirmation($phone, $customer);
+            }
+
+            return $this->startCheckoutDataCollection($phone);
         }
 
-        $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total);
-        $amount = number_format($total, 2, ',', '.');
+        return $this->startEmailVerificationForNewNumber($phone);
+    }
+
+    private function startCheckoutDataCollection(string $phone): bool
+    {
+        $state = $this->flowState($phone);
+        $hasName = ! empty((string) ($state['customer']['name'] ?? ''));
+        $state['checkout_step'] = $hasName ? 'collect_address' : 'collect_name';
+        $this->saveFlowState($phone, $state);
+
+        try {
+            if ($hasName) {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "📍 Perfeito! Agora informe o endereço completo de entrega:\n_Ex: Rua das Flores, 123 - Centro, Cidade - UF_"
+                );
+            } else {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "🛒 Ótima escolha! Vamos finalizar seu pedido.\n\n👤 Para começar, qual é o seu *nome completo*?"
+                );
+            }
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function startEmailVerificationForNewNumber(string $phone): bool
+    {
+        $state = $this->flowState($phone);
+        $state['checkout_step'] = 'verify_email_lookup';
+        $state['customer']['phone'] = $this->normalizePhoneForLookup($phone);
+        $this->saveFlowState($phone, $state);
 
         try {
             $this->zapiClient->sendText(
                 $phone,
-                'Pedido pronto! Total: R$ '.$amount.'.\nPague no link: '.$paymentLink.'\nApos o pagamento, seguimos com a confirmacao.'
+                "📧 Informe seu e-mail para verificarmos se já tem cadastro e receber o comprovante:"
             );
 
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function sendAddressConfirmation(string $phone, array $customer): bool
+    {
+        $state = $this->flowState($phone);
+        $state['checkout_step'] = 'confirm_address';
+        $this->saveFlowState($phone, $state);
+
+        $name      = (string) ($customer['name'] ?? '');
+        $address   = (string) ($customer['address'] ?? '');
+        $reference = (string) ($customer['reference'] ?? '');
+
+        $message = ($name ? "👋 Olá, *{$name}*!\n\n" : '')
+            ."📍 *Entrega será em:*\n"
+            .$address
+            .($reference ? "\n📌 Referência: {$reference}" : '')
+            ."\n\nEstá correto?";
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'checkout_confirm_address', 'label' => '✅ Confirmar endereço'],
+                ['id' => 'checkout_change_address',  'label' => '✏️ Alterar endereço'],
+            ]);
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function handleCheckoutTextInput(string $phone, string $rawText, string $normalizedText, string $checkoutStep): bool
+    {
+        $state = $this->flowState($phone);
+
+        // Allow escape words to cancel checkout
+        if (in_array($normalizedText, ['cancelar', 'voltar', 'inicio', 'menu', 'limpar'], true)) {
+            $state['checkout_step'] = '';
+            $this->saveFlowState($phone, $state);
+
+            return $this->sendWelcomePrompt($phone);
+        }
+
+        switch ($checkoutStep) {
+            case 'verify_email_lookup':
+                $email = strtolower(trim($rawText));
+
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                    try {
+                        $this->zapiClient->sendText($phone, '⚠️ E-mail inválido. Digite um e-mail válido para continuar.');
+
+                        return true;
+                    } catch (\Throwable) {
+                        return false;
+                    }
+                }
+
+                $normalizedPhone = $this->normalizePhoneForLookup($phone);
+                $existingUser = User::query()->where('email', $email)->first();
+
+                // Existing email: require code verification.
+                if ($existingUser !== null) {
+                    $code = (string) random_int(100000, 999999);
+                    $state['customer']['email'] = $email;
+                    $state['email_verification'] = [
+                        'email' => $email,
+                        'code_hash' => hash('sha256', $code),
+                        'expires_at' => now()->addMinutes(10)->toIso8601String(),
+                        'attempts' => 0,
+                    ];
+                    $state['checkout_step'] = 'verify_email_code';
+                    $this->saveFlowState($phone, $state);
+
+                    $this->sendEmailVerificationCode($email, $code);
+
+                    try {
+                        $this->zapiClient->sendText(
+                            $phone,
+                            '🔐 Enviamos um código de 6 dígitos para seu e-mail. Digite o código aqui no WhatsApp para confirmar.'
+                        );
+
+                        return true;
+                    } catch (\Throwable) {
+                        return false;
+                    }
+                }
+
+                // New email: proceed without code and create minimal account.
+                $fallbackName = trim(Str::before($email, '@'));
+                if ($fallbackName === '') {
+                    $fallbackName = 'Cliente WhatsApp';
+                }
+
+                $user = User::query()->create([
+                    'name' => Str::title(str_replace(['.', '_', '-'], ' ', $fallbackName)),
+                    'email' => $email,
+                    'phone' => $normalizedPhone,
+                    'email_verified_at' => now(),
+                    'password' => Str::random(24),
+                ]);
+
+                $state['customer']['name'] = (string) ($state['customer']['name'] ?? $user->name ?? '');
+                $state['customer']['email'] = $email;
+                $state['customer']['phone'] = $normalizedPhone;
+                unset($state['email_verification']);
+                $state['checkout_step'] = 'collect_name';
+                $this->saveFlowState($phone, $state);
+
+                try {
+                    $this->zapiClient->sendText(
+                        $phone,
+                        '✅ Cadastro iniciado com sucesso! Vamos seguir com os dados de entrega.'
+                    );
+                } catch (\Throwable) {
+                }
+
+                return $this->startCheckoutDataCollection($phone);
+
+            case 'verify_email_code':
+                $verification = $state['email_verification'] ?? null;
+
+                if (! is_array($verification)) {
+                    return $this->startEmailVerificationForNewNumber($phone);
+                }
+
+                $typedCode = preg_replace('/\D+/', '', $rawText) ?? '';
+                $expiresAt = isset($verification['expires_at']) ? CarbonImmutable::parse((string) $verification['expires_at']) : null;
+
+                if ($expiresAt === null || $expiresAt->isPast()) {
+                    unset($state['email_verification']);
+                    $state['checkout_step'] = 'verify_email_lookup';
+                    $this->saveFlowState($phone, $state);
+
+                    try {
+                        $this->zapiClient->sendText($phone, '⌛ O código expirou. Informe seu e-mail novamente para enviar um novo código.');
+
+                        return true;
+                    } catch (\Throwable) {
+                        return false;
+                    }
+                }
+
+                if (hash('sha256', $typedCode) !== (string) ($verification['code_hash'] ?? '')) {
+                    $verification['attempts'] = (int) ($verification['attempts'] ?? 0) + 1;
+                    $state['email_verification'] = $verification;
+                    $this->saveFlowState($phone, $state);
+
+                    try {
+                        $this->zapiClient->sendText($phone, '❌ Código inválido. Tente novamente.');
+
+                        return true;
+                    } catch (\Throwable) {
+                        return false;
+                    }
+                }
+
+                $email = strtolower(trim((string) ($verification['email'] ?? $state['customer']['email'] ?? '')));
+                $normalizedPhone = $this->normalizePhoneForLookup($phone);
+
+                $user = User::query()->where('email', $email)->first();
+
+                if ($user !== null) {
+                    if (empty((string) $user->phone)) {
+                        $user->phone = $normalizedPhone;
+                    }
+                    if ($user->email_verified_at === null) {
+                        $user->email_verified_at = now();
+                    }
+                    $user->save();
+                } else {
+                    $fallbackName = trim(Str::before($email, '@'));
+                    if ($fallbackName === '') {
+                        $fallbackName = 'Cliente WhatsApp';
+                    }
+
+                    $user = User::query()->create([
+                        'name' => Str::title(str_replace(['.', '_', '-'], ' ', $fallbackName)),
+                        'email' => $email,
+                        'phone' => $normalizedPhone,
+                        'email_verified_at' => now(),
+                        'password' => Str::random(24),
+                    ]);
+                }
+
+                $state['customer']['name'] = (string) ($state['customer']['name'] ?? $user->name ?? '');
+                $state['customer']['email'] = $email;
+                $state['customer']['phone'] = $normalizedPhone;
+                unset($state['email_verification']);
+                $state['checkout_step'] = 'collect_name';
+                $this->saveFlowState($phone, $state);
+
+                try {
+                    $this->zapiClient->sendText(
+                        $phone,
+                        '✅ E-mail confirmado com sucesso! Vamos seguir com os dados de entrega.'
+                    );
+                } catch (\Throwable) {
+                }
+
+                return $this->startCheckoutDataCollection($phone);
+
+            case 'collect_name':
+                $state['customer']['name'] = trim($rawText);
+                $state['checkout_step'] = 'collect_address';
+                $this->saveFlowState($phone, $state);
+
+                try {
+                    $this->zapiClient->sendText(
+                        $phone,
+                        '📍 Perfeito, *'.trim($rawText).'*! Agora informe o endereço completo de entrega:'
+                        ."\n_Ex: Rua das Flores, 123 – Centro, Cidade – UF_"
+                    );
+
+                    return true;
+                } catch (\Throwable) {
+                    return false;
+                }
+
+            case 'collect_address':
+            case 'change_address':
+                $state['customer']['address'] = trim($rawText);
+                $state['checkout_step'] = $checkoutStep === 'change_address' ? '' : 'collect_reference';
+                $this->saveFlowState($phone, $state);
+
+                if ($checkoutStep === 'change_address') {
+                    try {
+                        $this->zapiClient->sendText($phone, '✅ Endereço atualizado!');
+                    } catch (\Throwable) {
+                    }
+
+                    return $this->sendOrderSummary($phone);
+                }
+
+                try {
+                    $this->zapiClient->sendButtonActions(
+                        $phone,
+                        "📍 Tem alguma referência para ajudar na entrega?\n_Ex: Próximo ao mercado, portão azul_",
+                        [['id' => 'checkout_skip_reference', 'label' => 'Pular']]
+                    );
+
+                    return true;
+                } catch (\Throwable) {
+                    return false;
+                }
+
+            case 'collect_reference':
+                $state['customer']['reference'] = trim($rawText);
+                if (! empty((string) ($state['customer']['email'] ?? ''))) {
+                    $state['checkout_step'] = '';
+                    $this->saveFlowState($phone, $state);
+
+                    return $this->sendDataConfirmation($phone);
+                }
+
+                $state['checkout_step'] = 'collect_email';
+                $this->saveFlowState($phone, $state);
+
+                try {
+                    $this->zapiClient->sendButtonActions(
+                        $phone,
+                        "📧 Informe seu e-mail para receber o comprovante:\n_(opcional)_",
+                        [['id' => 'checkout_skip_email', 'label' => 'Pular']]
+                    );
+
+                    return true;
+                } catch (\Throwable) {
+                    return false;
+                }
+
+            case 'collect_email':
+                $state['customer']['email'] = trim($rawText);
+                $this->saveFlowState($phone, $state);
+
+                return $this->sendDataConfirmation($phone);
+
+            case 'confirm_data':
+            case 'checkout_summary':
+                return $this->handleSummaryEdit($phone, $rawText, $normalizedText);
+        }
+
+        return false;
+    }
+
+    private function sendEmailVerificationCode(string $email, string $code): void
+    {
+        try {
+            Mail::raw(
+                "Seu código de verificação é: {$code}\n\nEsse código expira em 10 minutos.",
+                static function ($message) use ($email): void {
+                    $message->to($email)->subject('Código de verificação - Zapediu');
+                }
+            );
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send email verification code.', [
+                'email' => $email,
+                'error' => $exception->getMessage(),
+            ]);
+        }
+    }
+
+    private function normalizePhoneForLookup(string $phone): string
+    {
+        return preg_replace('/\D+/', '', $phone) ?? $phone;
+    }
+
+    private function sendDataConfirmation(string $phone): bool
+    {
+        $state    = $this->flowState($phone);
+        $customer = $state['customer'] ?? [];
+
+        $name      = trim((string) ($customer['name']      ?? ''));
+        $email     = trim((string) ($customer['email']     ?? ''));
+        $address   = trim((string) ($customer['address']   ?? ''));
+        $reference = trim((string) ($customer['reference'] ?? ''));
+
+        $lines   = [];
+        $lines[] = '✅ *Confirme seus dados de entrega:*';
+        $lines[] = '';
+
+        if ($name !== '')      { $lines[] = '👤 *Nome:* '.$name; }
+        if ($email !== '')     { $lines[] = '📧 *E-mail:* '.$email; }
+        if ($address !== '')   { $lines[] = '📍 *Endereço:* '.$address; }
+        if ($reference !== '') { $lines[] = '📌 *Referência:* '.$reference; }
+
+        $lines[] = '';
+        $lines[] = '_Para corrigir algo, basta digitar:_';
+        $lines[] = '_`nome: Novo Nome`, `endereco: Rua Nova, 456` ou `referencia: portão azul`_';
+
+        $state['checkout_step'] = 'confirm_data';
+        $this->saveFlowState($phone, $state);
+
+        try {
+            $this->zapiClient->sendButtonActions(
+                $phone,
+                implode("\n", $lines),
+                [['id' => 'checkout_confirm_data', 'label' => '✅ Tudo certo']]
+            );
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send data confirmation.', ['phone' => $phone, 'error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    private function sendOrderSummary(string $phone): bool
+    {
+        $state   = $this->flowState($phone);
+        $cart    = $state['cart'] ?? [];
+        $storeId = (string) ($cart['store_id'] ?? '');
+        $store   = Store::query()->where('slug', $storeId)->first();
+        $customer = $state['customer'] ?? [];
+
+        if ($store === null) {
+            return false;
+        }
+
+        $items = $this->normalizeCartItems($cart['items'] ?? []);
+        $subtotal = 0.0;
+        $itemLines = [];
+
+        foreach ($items as $item) {
+            $lineTotal    = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $subtotal    += $lineTotal;
+            $label        = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
+            $line         = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            if ($item['observation']) {
+                $line .= "\n   📝 ".$item['observation'];
+            }
+            $itemLines[] = $line;
+        }
+
+        $deliveryFee = $this->buildStoreDeliveryFee($store);
+        $total = $subtotal + $deliveryFee;
+
+        $address   = (string) ($customer['address'] ?? '');
+        $reference = (string) ($customer['reference'] ?? '');
+
+        $etaSeeds = ['35–45 min', '30–40 min', '40–50 min', '45–55 min'];
+        $eta      = $etaSeeds[abs(crc32((string) $storeId)) % count($etaSeeds)];
+
+        $lines   = [];
+        $lines[] = '🧾 *Resumo do seu pedido:*';
+        $lines[] = '';
+
+        foreach ($itemLines as $il) {
+            $lines[] = $il;
+        }
+
+        $lines[] = '';
+        $lines[] = '🧮 *Subtotal: R$ '.number_format($subtotal, 2, ',', '.').'*';
+        $lines[] = '🚚 *Taxa de entrega:* '.($deliveryFee > 0 ? 'R$ '.number_format($deliveryFee, 2, ',', '.') : 'Grátis');
+        $lines[] = '💰 *Total: R$ '.number_format($total, 2, ',', '.').'*';
+        $lines[] = '';
+        $lines[] = '📍 *Entrega em:*';
+        $lines[] = $address ?: '—';
+
+        if ($reference) {
+            $lines[] = '📌 '.$reference;
+        }
+
+        $lines[] = '';
+        $lines[] = '⏱️ *Tempo estimado:* '.$eta;
+        $lines[] = '';
+        $lines[] = '_Para alterar algo antes de pagar, basta digitar:_';
+        $lines[] = '_`nome: Novo Nome`, `endereco: Rua Nova, 456` ou `referencia: portão azul`_';
+
+        $state['checkout_step'] = 'checkout_summary';
+        $this->saveFlowState($phone, $state);
+
+        try {
+            $this->zapiClient->sendButtonActions(
+                $phone,
+                implode("\n", $lines),
+                [['id' => 'checkout_pay_now', 'label' => '💳 Pagar agora']]
+            );
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send order summary.', ['phone' => $phone, 'error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    private function handleSummaryEdit(string $phone, string $rawText, string $normalizedText): bool
+    {
+        $state = $this->flowState($phone);
+        $patterns = [
+            'name'      => '/^nome\s*:\s*(.+)$/iu',
+            'address'   => '/^endere[cç]o\s*:\s*(.+)$/iu',
+            'reference' => '/^refer[eê]ncia\s*:\s*(.+)$/iu',
+            'email'     => '/^e?-?mail\s*:\s*(.+)$/iu',
+        ];
+
+        foreach ($patterns as $field => $pattern) {
+            if (preg_match($pattern, trim($rawText), $matches) === 1) {
+                $state['customer'][$field] = trim($matches[1]);
+                $this->saveFlowState($phone, $state);
+
+                return $this->sendOrderSummary($phone);
+            }
+        }
+
+        try {
+            $this->zapiClient->sendText(
+                $phone,
+                "💡 Para alterar dados, use o formato:\n`nome: Seu Nome`, `endereco: Rua Nova, 456`\n\nOu clique em *💳 Pagar agora* para confirmar."
+            );
+
+            return true;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
+    private function processPayment(string $phone): bool
+    {
+        $state    = $this->flowState($phone);
+        $cart     = $state['cart'] ?? [];
+        $storeId  = (string) ($cart['store_id'] ?? '');
+        $customer = $state['customer'] ?? [];
+
+        if ($storeId === '' || empty($cart['items'])) {
+            try {
+                $this->zapiClient->sendText($phone, '🛒 Seu carrinho está vazio. Adicione produtos para finalizar.');
+
+                return true;
+            } catch (\Throwable) {
+                return false;
+            }
+        }
+
+        $store = Store::query()->where('slug', $storeId)->first();
+        $items = $this->normalizeCartItems($cart['items']);
+        $subtotal = 0.0;
+
+        foreach ($items as $item) {
+            $subtotal += ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+        }
+
+        $deliveryFee = $store instanceof Store ? $this->buildStoreDeliveryFee($store) : 0.0;
+        $total = $subtotal + $deliveryFee;
+
+        // Generate readable order code
+        $orderCode = 'ZAP-'.date('ymd').'-'.strtoupper(Str::random(4));
+
+        // Persist Order
+        $order = Order::query()->create([
+            'code'             => $orderCode,
+            'store_id'         => $store?->id,
+            'channel'          => 'whatsapp',
+            'status'           => 'new',
+            'payment_status'   => 'pending',
+            'customer_name'    => (string) ($customer['name']    ?? ''),
+            'customer_phone'   => $phone,
+            'customer_address' => (string) ($customer['address'] ?? ''),
+            'notes'            => (string) ($customer['reference'] ?? ''),
+            'subtotal'         => $subtotal,
+            'delivery_fee'     => $deliveryFee,
+            'total'            => $total,
+            'ordered_at'       => now(),
+            'raw_payload'      => ['cart' => $cart, 'customer' => $customer],
+        ]);
+
+        // Persist OrderItems
+        foreach ($items as $item) {
+            $unit  = ($item['base_price'] + $item['additional_price']);
+            $meta  = array_filter([
+                'variation_id'   => $item['variation_id']   ?? null,
+                'variation_name' => $item['variation_name'] ?? null,
+                'observation'    => $item['observation']    ?? null,
+            ], fn (mixed $v): bool => $v !== null && $v !== '');
+
+            OrderItem::query()->create([
+                'order_id'     => $order->id,
+                'product_id'   => $item['product_id'],
+                'product_name' => $item['product_name'],
+                'quantity'     => $item['quantity'],
+                'unit_price'   => $unit,
+                'line_total'   => $unit * $item['quantity'],
+                'metadata'     => $meta ?: null,
+            ]);
+        }
+
+        $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total, $orderCode);
+        $amount      = 'R$ '.number_format($total, 2, ',', '.');
+
+        // Build message body
+        $msgLines   = [];
+        $msgLines[] = '🧾 *Nº DO PEDIDO:*';
+        $msgLines[] = '`'.$orderCode.'`';
+        $msgLines[] = '';
+
+        foreach ($items as $item) {
+            $label      = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
+            $lineTotal  = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $msgLines[] = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            if (! empty($item['observation'])) {
+                $msgLines[] = '   📝 '.$item['observation'];
+            }
+        }
+
+        $msgLines[] = '';
+        $msgLines[] = '🧮 *Subtotal: R$ '.number_format($subtotal, 2, ',', '.').'*';
+        $msgLines[] = '🚚 *Taxa de entrega:* '.($deliveryFee > 0 ? 'R$ '.number_format($deliveryFee, 2, ',', '.') : 'Grátis');
+        $msgLines[] = '💰 *Total: '.$amount.'*';
+        $msgLines[] = '';
+        $msgLines[] = '💳 Aceitamos *PIX e cartão*';
+        $msgLines[] = '_Após o pagamento, você receberá a confirmação aqui mesmo. 🙏_';
+
+        try {
+            $this->zapiClient->sendButtonActions(
+                $phone,
+                implode("\n", $msgLines),
+                [['type' => 'URL', 'url' => $paymentLink, 'label' => '🔗 Abrir link de pagamento']]
+            );
+
+            // Clear cart, persist order reference in state
+            $state['last_order_code']      = $orderCode;
+            $state['last_order_id']        = $order->id;
             $state['last_checkout_amount'] = $total;
-            $state['last_checkout_at'] = now()->toIso8601String();
-            $state['last_payment_link'] = $paymentLink;
-            $state['cart'] = ['store_id' => $storeId, 'items' => []];
+            $state['last_checkout_at']     = now()->toIso8601String();
+            $state['last_payment_link']    = $paymentLink;
+            $state['cart']                 = ['store_id' => $storeId, 'items' => []];
+            $state['checkout_step']        = '';
             $this->saveFlowState($phone, $state);
 
             return true;
         } catch (\Throwable $exception) {
-            Log::warning('Failed to send checkout payment link.', [
+            Log::warning('Failed to send payment link.', [
                 'phone' => $phone,
                 'error' => $exception->getMessage(),
             ]);
 
             return false;
         }
+    }
+
+    /**
+     * Normalises cart items to a consistent array of objects regardless of whether
+     * they were stored in the old format (assoc keyed by product_id => qty)
+     * or the new format (indexed list of item arrays).
+     *
+     * @return array<int, array{product_id: int, product_name: string, base_price: float, additional_price: float, quantity: int, variation_id: int|null, variation_name: string|null, observation: string|null}>
+     */
+    private function normalizeCartItems(array $items): array
+    {
+        if (array_is_list($items)) {
+            // New format: each element is an item array
+            return array_values(array_filter(
+                array_map(fn (mixed $item): ?array => is_array($item) ? [
+                    'product_id'       => (int) ($item['product_id'] ?? 0),
+                    'product_name'     => (string) ($item['product_name'] ?? 'Produto'),
+                    'base_price'       => (float) ($item['base_price'] ?? 0.0),
+                    'additional_price' => (float) ($item['additional_price'] ?? 0.0),
+                    'quantity'         => max(1, (int) ($item['quantity'] ?? 1)),
+                    'variation_id'     => isset($item['variation_id']) ? (int) $item['variation_id'] : null,
+                    'variation_name'   => isset($item['variation_name']) ? (string) $item['variation_name'] : null,
+                    'observation'      => isset($item['observation']) && $item['observation'] !== '' ? (string) $item['observation'] : null,
+                ] : null, $items)
+            ));
+        }
+
+        // Old format: keyed by product_id => quantity (integer)
+        $normalized = [];
+
+        foreach ($items as $productId => $qty) {
+            if ((int) $qty < 1) {
+                continue;
+            }
+
+            $product = Product::find((int) $productId);
+
+            $normalized[] = [
+                'product_id'       => (int) $productId,
+                'product_name'     => $product ? (string) $product->name : 'Produto #'.$productId,
+                'base_price'       => $product ? (float) $product->price : 0.0,
+                'additional_price' => 0.0,
+                'quantity'         => (int) $qty,
+                'variation_id'     => null,
+                'variation_name'   => null,
+                'observation'      => null,
+            ];
+        }
+
+        return $normalized;
     }
 
     private function returnToStores(string $phone): bool
@@ -935,15 +2196,18 @@ class ZapiWebhookService
             return false;
         }
 
+        $alwaysShowMoreCard = true;
+        $limit = 9;
+
         $stores = Store::query()
             ->where('is_active', true)
             ->where('category_id', $category->id)
             ->orderBy('name')
-            ->limit(10)
+            ->limit($limit)
             ->with('category:id,slug,name')
             ->get();
 
-        return $this->sendStoreCarouselFromCollection($phone, $stores, $this->buildCategoryHeader($category));
+        return $this->sendStoreCarouselFromCollection($phone, $stores, $this->buildCategoryHeader($category), $alwaysShowMoreCard);
     }
 
     private function sendCategoriesCarousel(string $phone): bool
@@ -975,7 +2239,7 @@ class ZapiWebhookService
         }
 
         try {
-            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria para ver lojas ativas.', $cards);
+            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria para ver as lojas disponíveis.', $cards);
 
             return true;
         } catch (\Throwable $exception) {
@@ -1005,7 +2269,7 @@ class ZapiWebhookService
         return $this->sendCategoryStores($phone, $categorySlug);
     }
 
-    private function sendStoreCarouselFromCollection(string $phone, $stores, string $message): bool
+    private function sendStoreCarouselFromCollection(string $phone, $stores, string $message, bool $appendMoreCard = false): bool
     {
         if ($stores->isEmpty()) {
             try {
@@ -1034,6 +2298,20 @@ class ZapiWebhookService
                     [
                         'id' => 'view_menu_'.$store->slug,
                         'label' => '📖 Ver Cardápio',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
+        }
+
+        if ($appendMoreCard) {
+            $cards[] = [
+                'text' => 'Ver mais lojas',
+                'image' => (string) config('services.zapi.flow_more_image', 'https://picsum.photos/seed/mais-lojas/600/600'),
+                'buttons' => [
+                    [
+                        'id' => 'flow_back_stores',
+                        'label' => 'Ver mais lojas',
                         'type' => 'REPLY',
                     ],
                 ],
@@ -1137,7 +2415,7 @@ class ZapiWebhookService
         return false;
     }
 
-    private function buildPaymentLink(string $phone, string $storeId, array $items, float $total): string
+    private function buildPaymentLink(string $phone, string $storeId, array $items, float $total, ?string $orderCode = null): string
     {
         $base = trim((string) config('services.zapi.payment_base_url', 'https://pagamento.deliveryzap.com/checkout'));
 
@@ -1146,11 +2424,11 @@ class ZapiWebhookService
         }
 
         $payload = [
-            'phone' => $phone,
-            'store' => $storeId,
-            'amount' => number_format($total, 2, '.', ''),
-            'items' => base64_encode(json_encode($items, JSON_THROW_ON_ERROR)),
-            'reference' => Str::ulid()->toBase32(),
+            'phone'     => $phone,
+            'store'     => $storeId,
+            'amount'    => number_format($total, 2, '.', ''),
+            'items'     => base64_encode(json_encode($items, JSON_THROW_ON_ERROR)),
+            'reference' => $orderCode ?? Str::ulid()->toBase32(),
         ];
 
         return $base.'?'.http_build_query($payload);
