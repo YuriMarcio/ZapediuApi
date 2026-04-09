@@ -62,6 +62,11 @@ class Product extends Model implements HasMedia
         return $this->hasMany(ProductVariation::class);
     }
 
+    public function optionalFlows(): MorphToMany
+    {
+        return $this->morphToMany(OptionalFlow::class, 'assignable', 'optional_flow_assignments');
+    }
+
     protected function imageUrl(): Attribute
     {
         return Attribute::get(function (): ?string {
