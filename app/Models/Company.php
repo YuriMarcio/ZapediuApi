@@ -3,12 +3,20 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Company extends Model
 {
     protected $fillable = [
         'name',
+        'trade_name',
+        'legal_name',
+        'document',
+        'phone',
+        'whatsapp',
+        'seller_id',
+        'plan_id',
         'slug',
         'segment',
         'api_token',
@@ -47,5 +55,10 @@ class Company extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class);
+    }
+
+    public function plan(): BelongsTo
+    {
+        return $this->belongsTo(Plan::class);
     }
 }

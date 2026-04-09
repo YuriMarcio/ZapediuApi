@@ -6,7 +6,7 @@ class DeliveredOrderState implements OrderState
 {
     public function value(): string
     {
-        return 'delivered';
+        return 'done';
     }
 
     public function canTransitionTo(string $nextState): bool

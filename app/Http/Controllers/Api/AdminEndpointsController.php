@@ -79,7 +79,7 @@ class AdminEndpointsController extends Controller
             'order' => [
                 'id' => 'ord_'.now()->format('YmdHis'),
                 'code' => 'PED-'.now()->format('His'),
-                'status' => 'new',
+                'status' => 'pending',
                 'total' => 49.90,
                 'customer' => [
                     'name' => 'Cliente Teste',

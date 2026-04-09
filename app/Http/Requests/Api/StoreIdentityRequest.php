@@ -22,6 +22,7 @@ class StoreIdentityRequest extends FormRequest
             'segment' => ['nullable', 'string', 'max:80'],
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
             'description' => ['nullable', 'string', 'max:500'],
+            'logo' => ['nullable', 'image', 'max:20480'],
         ];
     }
 }

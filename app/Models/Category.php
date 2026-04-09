@@ -5,6 +5,7 @@ namespace App\Models;
 use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Illuminate\Support\Str;
 
 class Category extends Model
@@ -14,6 +15,7 @@ class Category extends Model
     protected $fillable = [
         'company_id',
         'name',
+        'icon',
         'slug',
         'image_url',
         'ordem_exibicao',
@@ -37,7 +39,7 @@ class Category extends Model
         });
 
         static::updating(function (self $category): void {
-            if ($category->isDirty('name') && empty($category->slug)) {
+            if ($category->isDirty('name')) {
                 $category->slug = Str::slug($category->name);
             }
         });
@@ -51,5 +53,10 @@ class Category extends Model
     public function stores(): HasMany
     {
         return $this->hasMany(Store::class);
+    }
+
+    public function optionalFlows(): MorphToMany
+    {
+        return $this->morphToMany(OptionalFlow::class, 'assignable', 'optional_flow_assignments');
     }
 }

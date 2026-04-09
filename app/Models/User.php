@@ -6,15 +6,29 @@ namespace App\Models;
 use Database\Factories\UserFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
-use Laravel\Sanctum\HasApiTokens;
+use Tymon\JWTAuth\Contracts\JWTSubject;
 
-class User extends Authenticatable
+class User extends Authenticatable implements JWTSubject
 {
     /** @use HasFactory<UserFactory> */
-    use HasApiTokens, HasFactory, Notifiable;
+    use HasFactory, Notifiable;
+
+    public function getJWTIdentifier(): mixed
+    {
+        return $this->getKey();
+    }
+
+    public function getJWTCustomClaims(): array
+    {
+        return [
+            'company_id' => $this->company_id,
+            'role'       => $this->role,
+        ];
+    }
 
     /**
      * The attributes that are mass assignable.
@@ -26,9 +40,11 @@ class User extends Authenticatable
         'name',
         'email',
         'phone',
+        'cpf',
         'password',
         'is_admin',
         'role',
+        'seller_code',
         'last_login_at',
         'last_login_ip',
     ];
@@ -66,5 +82,25 @@ class User extends Authenticatable
     public function stores(): HasMany
     {
         return $this->hasMany(Store::class);
+    }
+
+    public function phones(): HasMany
+    {
+        return $this->hasMany(UserPhone::class);
+    }
+
+    public function primaryPhone(): HasOne
+    {
+        return $this->hasOne(UserPhone::class)->where('is_primary', true);
+    }
+
+    public function addresses(): HasMany
+    {
+        return $this->hasMany(UserAddress::class);
+    }
+
+    public function primaryAddress(): HasOne
+    {
+        return $this->hasOne(UserAddress::class)->where('is_primary', true);
     }
 }

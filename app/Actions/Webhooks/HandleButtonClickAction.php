@@ -21,14 +21,14 @@ class HandleButtonClickAction
 
         if ($intent === 'buy') {
             $order = Order::query()
-                ->when($clickData->customerPhone !== null, fn ($query) => $query->where('customer_phone', $clickData->customerPhone))
+                ->when($clickData->customerPhone !== null, function ($query) use ($clickData) {
+                    $query->whereHas('user', function ($inner) use ($clickData): void {
+                        $inner->where('phone', $clickData->customerPhone)
+                            ->orWhereHas('phones', fn ($phoneQuery) => $phoneQuery->where('phone', $clickData->customerPhone));
+                    });
+                })
                 ->latest('id')
                 ->first();
-
-            if ($order !== null) {
-                $this->stateMachine->transition($order, 'confirmed');
-                $order->increment('whatsapp_clicks');
-            }
         }
 
         WhatsappClickEvent::query()->create([

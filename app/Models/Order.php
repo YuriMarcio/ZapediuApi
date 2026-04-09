@@ -6,7 +6,6 @@ use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class Order extends Model
 {
@@ -14,17 +13,14 @@ class Order extends Model
 
     protected $fillable = [
         'company_id',
+        'user_id',
         'store_id',
+        'product_ids',
         'delivery_id',
         'code',
-        'channel',
-        'whatsapp_clicks',
         'status',
         'payment_status',
         'payment_method',
-        'customer_name',
-        'customer_phone',
-        'customer_address',
         'subtotal',
         'delivery_fee',
         'discount',
@@ -37,7 +33,7 @@ class Order extends Model
     ];
 
     protected $casts = [
-        'whatsapp_clicks'    => 'integer',
+        'product_ids'        => 'array',
         'subtotal'           => 'decimal:2',
         'delivery_fee'       => 'decimal:2',
         'discount'           => 'decimal:2',
@@ -54,38 +50,44 @@ class Order extends Model
         return $this->belongsTo(Store::class);
     }
 
+    public function user(): BelongsTo
+    {
+        return $this->belongsTo(User::class);
+    }
+
     public function delivery(): BelongsTo
     {
         return $this->belongsTo(Delivery::class);
     }
 
-    public function items(): HasMany
-    {
-        return $this->hasMany(OrderItem::class);
-    }
-
     // ── Accessors ────────────────────────────────────────────────────────────
 
     /**
-     * Year of the first order placed by the same customer_phone, or this
+     * Year of the first order placed by the same customer phone, or this
      * order's year if no phone is recorded. Used for "Cliente desde XXXX".
      */
     protected function customerSinceYear(): Attribute
     {
         return Attribute::get(function (): int {
-            if ($this->customer_phone === null || $this->customer_phone === '') {
-                return (int) ($this->ordered_at ?? $this->created_at)->format('Y');
+            $phone = $this->user?->primaryPhone?->phone ?: $this->user?->phone;
+            $fallbackDate = $this->ordered_at ?? $this->created_at ?? now();
+
+            if ($phone === null || $phone === '') {
+                return (int) $fallbackDate->format('Y');
             }
 
             /** @var self|null $first */
             $first = self::withoutGlobalScopes()
                 ->where('company_id', $this->company_id)
-                ->where('customer_phone', $this->customer_phone)
+                ->whereHas('user', function ($query) use ($phone): void {
+                    $query->where('phone', $phone)
+                        ->orWhereHas('phones', fn ($phoneQuery) => $phoneQuery->where('phone', $phone));
+                })
                 ->orderBy('ordered_at')
                 ->orderBy('id')
                 ->first(['ordered_at', 'created_at']);
 
-            $date = $first?->ordered_at ?? $first?->created_at ?? $this->created_at;
+            $date = $first?->ordered_at ?? $first?->created_at ?? $fallbackDate;
 
             return (int) $date->format('Y');
         });

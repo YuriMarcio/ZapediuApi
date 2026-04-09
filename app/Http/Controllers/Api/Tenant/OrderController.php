@@ -17,7 +17,7 @@ class OrderController extends Controller
      *
      * Query params:
      *   tab      = active (default) | history
-     *   status   = new|confirmed|preparing|out_for_delivery|delivered|cancelled
+        *   status   = pending|accepted|preparing|delivering|done|cancelled
      *   search   = customer name/phone/code
      *   per_page = default 20
      */
@@ -28,7 +28,7 @@ class OrderController extends Controller
 
     /**
      * GET /tenant/orders/summary
-     * Returns live counts per active sub-tab (Novos, Em Preparo, Na Rota).
+        * Returns live counts used by the board headers.
      */
     public function summary(): JsonResponse
     {
@@ -37,7 +37,7 @@ class OrderController extends Controller
 
     /**
      * GET /tenant/orders/{order}
-     * Full detail: items (with product image), delivery address, customer since year.
+        * Full detail in the frontend order-contract shape.
      */
     public function show(Order $order): JsonResponse
     {
@@ -49,7 +49,7 @@ class OrderController extends Controller
      *
      * Body: { "prep_minutes": 45 }   (optional, default 45)
      *
-     * Transitions: new → confirmed
+    * Transitions: pending → accepted
      * Side-effects: sets estimated_ready_at, queues WhatsApp notification.
      */
     public function accept(Request $request, Order $order): JsonResponse
@@ -72,7 +72,7 @@ class OrderController extends Controller
      *
      * Body: { "reason": "Fora do horário de entrega" }   (optional)
      *
-     * Transitions: new → cancelled
+    * Transitions: pending → cancelled
      * Side-effects: stores rejection_reason, queues WhatsApp notification.
      */
     public function reject(Request $request, Order $order): JsonResponse
@@ -94,7 +94,7 @@ class OrderController extends Controller
      * POST /tenant/orders/{order}/advance
      *
      * Advances along the happy path:
-     *   confirmed → preparing → out_for_delivery → delivered
+    *   accepted → preparing → delivering → done
      *
      * Side-effects: queues WhatsApp notification for every transition.
      */

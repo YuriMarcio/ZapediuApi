@@ -6,10 +6,11 @@ use App\Jobs\Whatsapp\SendCartFeedbackJob;
 use App\Models\Category;
 use App\Models\Delivery;
 use App\Models\Order;
-use App\Models\OrderItem;
 use App\Models\Product;
 use App\Models\ProductVariation;
 use App\Models\Store;
+use App\Models\UserAddress;
+use App\Models\UserPhone;
 use App\Models\User;
 use App\Models\WebhookEvent;
 use Carbon\CarbonImmutable;
@@ -1468,7 +1469,11 @@ class ZapiWebhookService
         }
 
         $normalizedPhone = $this->normalizePhoneForLookup($phone);
-        $user = User::query()->where('phone', $normalizedPhone)->first();
+        $user = User::query()
+            ->where('phone', $normalizedPhone)
+            ->orWhereHas('phones', fn ($query) => $query->where('phone', $normalizedPhone))
+            ->with(['primaryAddress'])
+            ->first();
 
         if ($user !== null) {
             $customer = (array) ($state['customer'] ?? []);
@@ -1476,17 +1481,10 @@ class ZapiWebhookService
             $customer['email'] = (string) ($customer['email'] ?? $user->email ?? '');
             $customer['phone'] = $normalizedPhone;
 
-            // If address is missing in state, try reusing the latest order address for this phone.
             if (empty($customer['address'])) {
-                $lastOrder = Order::query()
-                    ->where('customer_phone', $phone)
-                    ->orWhere('customer_phone', $normalizedPhone)
-                    ->orderByDesc('id')
-                    ->first();
-
-                if ($lastOrder !== null) {
-                    $customer['address'] = (string) ($lastOrder->customer_address ?? '');
-                    $customer['reference'] = (string) ($lastOrder->notes ?? '');
+                if ($user->primaryAddress !== null) {
+                    $customer['address'] = (string) ($user->primaryAddress->formatted ?? '');
+                    $customer['reference'] = (string) ($user->primaryAddress->notes ?? '');
                 }
             }
 
@@ -1644,7 +1642,10 @@ class ZapiWebhookService
                     'phone' => $normalizedPhone,
                     'email_verified_at' => now(),
                     'password' => Str::random(24),
+                    'role' => 'customer',
                 ]);
+
+                $this->syncUserPhone($user, $normalizedPhone);
 
                 $state['customer']['name'] = (string) ($state['customer']['name'] ?? $user->name ?? '');
                 $state['customer']['email'] = $email;
@@ -1714,6 +1715,7 @@ class ZapiWebhookService
                         $user->email_verified_at = now();
                     }
                     $user->save();
+                    $this->syncUserPhone($user, $normalizedPhone);
                 } else {
                     $fallbackName = trim(Str::before($email, '@'));
                     if ($fallbackName === '') {
@@ -1726,7 +1728,10 @@ class ZapiWebhookService
                         'phone' => $normalizedPhone,
                         'email_verified_at' => now(),
                         'password' => Str::random(24),
+                        'role' => 'customer',
                     ]);
+
+                    $this->syncUserPhone($user, $normalizedPhone);
                 }
 
                 $state['customer']['name'] = (string) ($state['customer']['name'] ?? $user->name ?? '');
@@ -1848,6 +1853,45 @@ class ZapiWebhookService
     private function normalizePhoneForLookup(string $phone): string
     {
         return preg_replace('/\D+/', '', $phone) ?? $phone;
+    }
+
+    private function resolveCustomerUser(?int $companyId, string $customerName, string $customerPhone, string $customerEmail, string $orderCode): ?User
+    {
+        if ($customerPhone === '' && $customerEmail === '') {
+            return null;
+        }
+
+        $query = User::query();
+
+        if ($companyId !== null) {
+            $query->where('company_id', $companyId);
+        }
+
+        $query->where(function ($inner) use ($customerPhone, $customerEmail): void {
+            if ($customerPhone !== '') {
+                $inner->orWhere('phone', $customerPhone);
+            }
+
+            if ($customerEmail !== '') {
+                $inner->orWhere('email', $customerEmail);
+            }
+        });
+
+        $user = $query->first();
+
+        if ($user !== null) {
+            return $user;
+        }
+
+        return User::query()->create([
+            'company_id' => $companyId,
+            'name' => $customerName !== '' ? $customerName : 'Cliente '.($customerPhone !== '' ? $customerPhone : $orderCode),
+            'email' => $customerEmail !== '' ? $customerEmail : 'cliente-'.($customerPhone !== '' ? $customerPhone : Str::lower(Str::slug($orderCode))).'@deliveryzap.local',
+            'phone' => $customerPhone !== '' ? $customerPhone : null,
+            'password' => Str::random(32),
+            'is_admin' => false,
+            'role' => 'customer',
+        ]);
     }
 
     private function sendDataConfirmation(string $phone): bool
@@ -2034,15 +2078,21 @@ class ZapiWebhookService
         $orderCode = 'ZAP-'.date('ymd').'-'.strtoupper(Str::random(4));
 
         // Persist Order
+        $customerUser = $this->resolveCustomerUser(
+            $store?->company_id,
+            (string) ($customer['name'] ?? ''),
+            $this->normalizePhoneForLookup($phone),
+            (string) ($customer['email'] ?? ''),
+            $orderCode,
+        );
+
         $order = Order::query()->create([
             'code'             => $orderCode,
+            'user_id'          => $customerUser?->id,
             'store_id'         => $store?->id,
-            'channel'          => 'whatsapp',
-            'status'           => 'new',
+            'product_ids'      => array_values(array_map(static fn (array $item): int => (int) $item['product_id'], $items)),
+            'status'           => 'pending',
             'payment_status'   => 'pending',
-            'customer_name'    => (string) ($customer['name']    ?? ''),
-            'customer_phone'   => $phone,
-            'customer_address' => (string) ($customer['address'] ?? ''),
             'notes'            => (string) ($customer['reference'] ?? ''),
             'subtotal'         => $subtotal,
             'delivery_fee'     => $deliveryFee,
@@ -2051,25 +2101,12 @@ class ZapiWebhookService
             'raw_payload'      => ['cart' => $cart, 'customer' => $customer],
         ]);
 
-        // Persist OrderItems
-        foreach ($items as $item) {
-            $unit  = ($item['base_price'] + $item['additional_price']);
-            $meta  = array_filter([
-                'variation_id'   => $item['variation_id']   ?? null,
-                'variation_name' => $item['variation_name'] ?? null,
-                'observation'    => $item['observation']    ?? null,
-            ], fn (mixed $v): bool => $v !== null && $v !== '');
-
-            OrderItem::query()->create([
-                'order_id'     => $order->id,
-                'product_id'   => $item['product_id'],
-                'product_name' => $item['product_name'],
-                'quantity'     => $item['quantity'],
-                'unit_price'   => $unit,
-                'line_total'   => $unit * $item['quantity'],
-                'metadata'     => $meta ?: null,
-            ]);
-        }
+        $this->syncUserPhone($customerUser, $this->normalizePhoneForLookup($phone));
+        $this->syncUserAddress(
+            $customerUser,
+            (string) ($customer['address'] ?? ''),
+            (string) ($customer['reference'] ?? '')
+        );
 
         $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total, $orderCode);
         $amount      = 'R$ '.number_format($total, 2, ',', '.');
@@ -2537,9 +2574,11 @@ class ZapiWebhookService
         $statusValue = $payload['status']
             ?? data_get($payload, 'order.status')
             ?? data_get($payload, 'message.status')
-            ?? 'new';
+            ?? 'pending';
 
-        $status = strtolower($this->extractScalarText($statusValue, ['status', 'text']) ?? 'new');
+        $status = $this->mapIncomingOrderStatus(
+            strtolower($this->extractScalarText($statusValue, ['status', 'text']) ?? 'pending')
+        );
 
         $totalValue = $payload['total']
             ?? data_get($payload, 'order.total')
@@ -2571,6 +2610,50 @@ class ZapiWebhookService
             'last_update_at' => $this->resolveDateTime($updatedAt),
             'raw_payload' => $payload,
         ];
+    }
+
+    private function mapIncomingOrderStatus(string $status): string
+    {
+        return match ($status) {
+            'new' => 'pending',
+            'confirmed' => 'accepted',
+            'out_for_delivery' => 'delivering',
+            'delivered' => 'done',
+            'pending', 'accepted', 'preparing', 'delivering', 'done', 'cancelled' => $status,
+            default => 'pending',
+        };
+    }
+
+    private function syncUserPhone(?User $user, string $phone): void
+    {
+        if ($user === null || $phone === '') {
+            return;
+        }
+
+        UserPhone::query()->where('user_id', $user->id)->update(['is_primary' => false]);
+
+        UserPhone::query()->updateOrCreate(
+            ['user_id' => $user->id, 'phone' => $phone],
+            ['label' => 'principal', 'is_primary' => true]
+        );
+    }
+
+    private function syncUserAddress(?User $user, string $formattedAddress, ?string $reference): void
+    {
+        if ($user === null || $formattedAddress === '') {
+            return;
+        }
+
+        UserAddress::query()->where('user_id', $user->id)->update(['is_primary' => false]);
+
+        UserAddress::query()->updateOrCreate(
+            ['user_id' => $user->id, 'formatted' => $formattedAddress],
+            [
+                'street' => $formattedAddress,
+                'notes' => $reference,
+                'is_primary' => true,
+            ]
+        );
     }
 
     private function resolveDateTime(mixed $value): ?CarbonImmutable

@@ -11,6 +11,6 @@ class PreparingOrderState implements OrderState
 
     public function canTransitionTo(string $nextState): bool
     {
-        return in_array($nextState, ['out_for_delivery', 'cancelled'], true);
+        return in_array($nextState, ['delivering', 'cancelled'], true);
     }
 }

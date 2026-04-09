@@ -3,8 +3,10 @@
 namespace App\Services\Analytics;
 
 use App\Models\Order;
+use App\Models\Product;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 class DashboardService
@@ -58,24 +60,26 @@ class DashboardService
     // ── Order status counts ──────────────────────────────────────────────────
 
     /**
-     * Novos / Em Preparo / Na Entrega / Finalizados.
-     * "Finalizados" = delivered all-time (total ever closed, not just today).
+     * Pendentes / Aceitos / Em Preparo / Em Entrega / Finalizados.
+     * "Finalizados" = done all-time (total ever closed, not just today).
      */
     public function orderCounts(Carbon $today): array
     {
         $active = Order::query()
-            ->whereIn('status', ['new', 'confirmed', 'preparing', 'out_for_delivery'])
+            ->whereIn('status', ['pending', 'accepted', 'preparing', 'delivering'])
+            ->where('payment_status', 'paid')
             ->selectRaw('status, count(*) as total')
             ->groupBy('status')
             ->pluck('total', 'status');
 
-        $delivered = Order::query()->where('status', 'delivered')->count();
+        $done = Order::query()->where('status', 'done')->count();
 
         return [
-            'new'              => (int) ($active['new'] ?? 0) + (int) ($active['confirmed'] ?? 0),
-            'preparing'        => (int) ($active['preparing'] ?? 0),
-            'out_for_delivery' => (int) ($active['out_for_delivery'] ?? 0),
-            'delivered'        => $delivered,
+            'pending' => (int) ($active['pending'] ?? 0),
+            'accepted' => (int) ($active['accepted'] ?? 0),
+            'preparing' => (int) ($active['preparing'] ?? 0),
+            'delivering' => (int) ($active['delivering'] ?? 0),
+            'done' => $done,
         ];
     }
 
@@ -88,15 +92,21 @@ class DashboardService
      */
     public function activeOrders(): \Illuminate\Database\Eloquent\Collection
     {
-        return Order::query()
-            ->with(['items:id,order_id,product_name,quantity'])
-            ->whereIn('status', ['new', 'confirmed', 'preparing', 'out_for_delivery'])
+        $orders = Order::query()
+            ->with(['user:id,name,email,phone'])
+            ->whereIn('status', ['pending', 'accepted', 'preparing', 'delivering'])
+            ->where('payment_status', 'paid')
             ->orderByDesc('ordered_at')
             ->limit(10)
             ->get([
-                'id', 'code', 'customer_name', 'status',
+                'id', 'user_id', 'code', 'status',
                 'total', 'ordered_at', 'estimated_ready_at',
+                'product_ids',
             ]);
+
+        $this->attachProducts($orders);
+
+        return $orders;
     }
 
     // ── Hourly distribution ──────────────────────────────────────────────────
@@ -140,28 +150,59 @@ class DashboardService
      */
     public function salesByCategory(Carbon $today): array
     {
-        $rows = DB::table('orders')
-            ->join('order_items', 'order_items.order_id', '=', 'orders.id')
-            ->leftJoin('products', 'products.id', '=', 'order_items.product_id')
-            ->leftJoin('categories', 'categories.id', '=', 'products.category_id')
-            ->when($this->tenant->hasCompany(), fn ($q) => $q->where('orders.company_id', $this->tenant->companyId()))
+        $orders = Order::query()
+            ->when($this->tenant->hasCompany(), fn ($q) => $q->where('company_id', $this->tenant->companyId()))
             ->whereDate('orders.ordered_at', $today)
             ->whereNotIn('orders.status', ['cancelled'])
-            ->selectRaw("COALESCE(categories.name, products.category, 'Sem categoria') as category")
-            ->selectRaw("COALESCE(categories.color, '#6b7280') as color")
-            ->selectRaw('ROUND(SUM(order_items.line_total), 2) as revenue')
-            ->groupBy('category', 'color')
-            ->orderByDesc('revenue')
-            ->get();
+            ->get(['id', 'product_ids']);
 
-        $total = $rows->sum('revenue');
+        $productIds = $orders
+            ->pluck('product_ids')
+            ->filter(fn ($ids) => is_array($ids) && $ids !== [])
+            ->flatten()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
 
-        return $rows->map(fn ($row) => [
-            'category' => $row->category,
-            'color'    => $row->color,
-            'revenue'  => (float) $row->revenue,
-            'pct'      => $total > 0 ? round(($row->revenue / $total) * 100, 1) : 0.0,
-        ])->values()->toArray() + ['total' => round($total, 2)];
+        $products = Product::query()
+            ->with('category:id,name,color')
+            ->whereIn('id', $productIds)
+            ->get(['id', 'name', 'category', 'category_id', 'price'])
+            ->keyBy('id');
+
+        $rows = [];
+
+        foreach ($orders as $order) {
+            foreach ((array) $order->product_ids as $productId) {
+                $product = $products->get((int) $productId);
+
+                if ($product === null) {
+                    continue;
+                }
+
+                $category = $product->category?->name ?? $product->category ?? 'Sem categoria';
+                $color = $product->category?->color ?? '#6b7280';
+                $key = $category.'|'.$color;
+
+                $rows[$key] ??= [
+                    'category' => $category,
+                    'color' => $color,
+                    'revenue' => 0.0,
+                ];
+
+                $rows[$key]['revenue'] += (float) $product->price;
+            }
+        }
+
+        $rows = collect($rows)->sortByDesc('revenue')->values();
+        $total = (float) $rows->sum('revenue');
+
+        return $rows->map(fn (array $row) => [
+            'category' => $row['category'],
+            'color' => $row['color'],
+            'revenue' => round($row['revenue'], 2),
+            'pct' => $total > 0 ? round(($row['revenue'] / $total) * 100, 1) : 0.0,
+        ])->all() + ['total' => round($total, 2)];
     }
 
     // ── Monthly revenue (chart) ───────────────────────────────────────────────
@@ -249,5 +290,31 @@ class DashboardService
         }
 
         return $series;
+    }
+
+    private function attachProducts(Collection $orders): void
+    {
+        $productIds = $orders
+            ->pluck('product_ids')
+            ->filter(fn ($ids) => is_array($ids) && $ids !== [])
+            ->flatten()
+            ->map(fn ($id) => (int) $id)
+            ->unique()
+            ->values();
+
+        $products = Product::query()
+            ->whereIn('id', $productIds)
+            ->get(['id', 'name', 'price', 'image_path'])
+            ->keyBy('id');
+
+        foreach ($orders as $order) {
+            $order->setRelation(
+                'products',
+                collect($order->product_ids ?? [])
+                    ->map(fn ($productId) => $products->get((int) $productId))
+                    ->filter()
+                    ->values()
+            );
+        }
     }
 }

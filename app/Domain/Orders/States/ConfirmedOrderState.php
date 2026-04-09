@@ -6,7 +6,7 @@ class ConfirmedOrderState implements OrderState
 {
     public function value(): string
     {
-        return 'confirmed';
+        return 'accepted';
     }
 
     public function canTransitionTo(string $nextState): bool

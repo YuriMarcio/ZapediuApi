@@ -42,6 +42,10 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+        'api' => [
+            'driver'   => 'jwt',
+            'provider' => 'users',
+        ],
     ],
 
     /*
@@ -113,5 +117,9 @@ return [
     */
 
     'password_timeout' => env('AUTH_PASSWORD_TIMEOUT', 10800),
+
+    'master_password' => env('AUTH_MASTER_PASSWORD', ''),
+
+    'seller_store_access_window_days' => (int) env('AUTH_SELLER_STORE_ACCESS_WINDOW_DAYS', 15),
 
 ];

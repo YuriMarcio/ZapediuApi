@@ -7,8 +7,10 @@ use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
+use Spatie\MediaLibrary\MediaCollections\Models\Media;
 
 class Product extends Model implements HasMedia
 {
@@ -19,6 +21,8 @@ class Product extends Model implements HasMedia
         'company_id',
         'store_id',
         'category_id',
+        'selection_group_id',
+        'variation_group_id',
         'name',
         'sku',
         'description',
@@ -52,9 +56,14 @@ class Product extends Model implements HasMedia
         return $this->belongsTo(Category::class);
     }
 
-    public function orderItems(): HasMany
+    public function selectionGroup(): BelongsTo
     {
-        return $this->hasMany(OrderItem::class);
+        return $this->belongsTo(SelectionGroup::class);
+    }
+
+    public function variationGroup(): BelongsTo
+    {
+        return $this->belongsTo(VariationGroup::class);
     }
 
     public function variations(): HasMany
@@ -70,8 +79,12 @@ class Product extends Model implements HasMedia
     protected function imageUrl(): Attribute
     {
         return Attribute::get(function (): ?string {
-            $fromMedia = $this->getFirstMediaUrl('products');
+            $whatsapp = $this->getFirstMediaUrl('products', 'whatsapp');
+            if ($whatsapp !== '') {
+                return $whatsapp;
+            }
 
+            $fromMedia = $this->getFirstMediaUrl('products');
             if ($fromMedia !== '') {
                 return str_starts_with($fromMedia, 'http') ? $fromMedia : url($fromMedia);
             }
@@ -86,5 +99,13 @@ class Product extends Model implements HasMedia
 
             return url('/storage/'.ltrim($this->image_path, '/'));
         });
+    }
+
+    public function registerMediaConversions(?Media $media = null): void
+    {
+        $this->addMediaConversion('whatsapp')
+            ->width(800)
+            ->format('webp')
+            ->quality(75);
     }
 }

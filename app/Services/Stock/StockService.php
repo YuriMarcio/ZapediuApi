@@ -5,16 +5,21 @@ namespace App\Services\Stock;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductVariation;
+use App\Services\ImageUploadService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Arr;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 
 class StockService
 {
-    public function __construct(private readonly AuditLogger $auditLogger) {}
+    public function __construct(
+        private readonly AuditLogger $auditLogger,
+        private readonly ImageUploadService $imageUploader,
+    ) {}
 
     /**
      * Paginated product list with search and category filter.
@@ -28,7 +33,14 @@ class StockService
     public function listProducts(Request $request): LengthAwarePaginator
     {
         return Product::query()
-            ->with(['category:id,name,color,slug', 'variations:id,product_id,name,price,stock_quantity,is_default,is_active'])
+            ->with([
+                'category:id,name,color,slug',
+                'selectionGroup:id,name,display_type,is_required,is_active',
+                'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
+                'variationGroup:id,name,required',
+                'variationGroup.options:id,variation_group_id,name,price,sort_order',
+                'variations:id,product_id,name,price,stock_quantity,is_default,is_active',
+            ])
             ->when(
                 $request->filled('search'),
                 fn ($q) => $q->where(function ($inner) use ($request): void {
@@ -72,7 +84,14 @@ class StockService
                 'changes'     => $product->toArray(),
             ], $request);
 
-            return $product->load(['category:id,name,color,slug', 'variations']);
+            return $product->load([
+                'category:id,name,color,slug',
+                'selectionGroup:id,name,display_type,is_required,is_active',
+                'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
+                'variationGroup:id,name,required',
+                'variationGroup.options:id,variation_group_id,name,price,sort_order',
+                'variations',
+            ]);
         });
     }
 
@@ -100,7 +119,14 @@ class StockService
                 'changes'     => $product->toArray(),
             ], $request);
 
-            return $product->refresh()->load(['category:id,name,color,slug', 'variations']);
+            return $product->refresh()->load([
+                'category:id,name,color,slug',
+                'selectionGroup:id,name,display_type,is_required,is_active',
+                'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
+                'variationGroup:id,name,required',
+                'variationGroup.options:id,variation_group_id,name,price,sort_order',
+                'variations',
+            ]);
         });
     }
 
@@ -127,9 +153,21 @@ class StockService
     public function listCategories(): \Illuminate\Database\Eloquent\Collection
     {
         return Category::query()
-            ->where('is_active', true)
+            ->withCount('products')
+            ->orderBy('ordem_exibicao')
             ->orderBy('name')
-            ->get(['id', 'name', 'slug', 'color', 'is_active']);
+            ->get([
+                'id',
+                'name',
+                'icon',
+                'slug',
+                'image_url',
+                'ordem_exibicao',
+                'color',
+                'is_active',
+                'created_at',
+                'updated_at',
+            ]);
     }
 
     /**
@@ -137,9 +175,25 @@ class StockService
      *
      * @param  array<string, mixed>  $data
      */
-    public function createCategory(array $data): Category
+    public function createCategory(array $data, ?UploadedFile $image, Request $request): Category
     {
-        return Category::query()->create($data);
+        return DB::transaction(function () use ($data, $image, $request): Category {
+            $payload = $this->normalizeCategoryPayload($data);
+
+            if ($image !== null) {
+                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+            }
+
+            $category = Category::query()->create($payload);
+
+            $this->auditLogger->log('category.created', [
+                'entity_type' => Category::class,
+                'entity_id' => $category->id,
+                'changes' => $category->toArray(),
+            ], $request);
+
+            return $category->refresh()->loadCount('products');
+        });
     }
 
     /**
@@ -147,11 +201,26 @@ class StockService
      *
      * @param  array<string, mixed>  $data
      */
-    public function updateCategory(Category $category, array $data): Category
+    public function updateCategory(Category $category, array $data, ?UploadedFile $image, Request $request): Category
     {
-        $category->fill($data)->save();
+        return DB::transaction(function () use ($category, $data, $image, $request): Category {
+            $payload = $this->normalizeCategoryPayload($data);
 
-        return $category->refresh();
+            if ($image !== null) {
+                $this->deleteCategoryImageIfLocal($category->image_url);
+                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+            }
+
+            $category->fill($payload)->save();
+
+            $this->auditLogger->log('category.updated', [
+                'entity_type' => Category::class,
+                'entity_id' => $category->id,
+                'changes' => $category->toArray(),
+            ], $request);
+
+            return $category->refresh()->loadCount('products');
+        });
     }
 
     /**
@@ -159,7 +228,46 @@ class StockService
      */
     public function deleteCategory(Category $category): void
     {
+        $this->deleteCategoryImageIfLocal($category->image_url);
         $category->delete();
+    }
+
+    /**
+     * @param  array<string, mixed>  $data
+     * @return array<string, mixed>
+     */
+    private function normalizeCategoryPayload(array $data): array
+    {
+        if (array_key_exists('sort_order', $data)) {
+            $data['ordem_exibicao'] = (int) $data['sort_order'];
+            unset($data['sort_order']);
+        }
+
+        return $data;
+    }
+
+    private function deleteCategoryImageIfLocal(?string $imageUrl): void
+    {
+        if ($imageUrl === null || $imageUrl === '') {
+            return;
+        }
+
+        // R2 URL — delete from R2
+        $r2PublicUrl = rtrim((string) config('filesystems.disks.r2.url', ''), '/');
+        if ($r2PublicUrl !== '' && str_starts_with($imageUrl, $r2PublicUrl)) {
+            $this->imageUploader->delete($imageUrl);
+
+            return;
+        }
+
+        // Legacy local storage URL — delete from public disk
+        $prefix = url('/storage/');
+        if (str_starts_with($imageUrl, $prefix)) {
+            $path = ltrim(substr($imageUrl, strlen($prefix)), '/');
+            if ($path !== '') {
+                Storage::disk('public')->delete($path);
+            }
+        }
     }
 
     /**

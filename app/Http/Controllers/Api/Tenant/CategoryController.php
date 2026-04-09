@@ -3,10 +3,11 @@
 namespace App\Http\Controllers\Api\Tenant;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\Api\StoreCategoryRequest;
+use App\Http\Requests\Api\UpdateCategoryRequest;
 use App\Models\Category;
 use App\Services\Stock\StockService;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Http\Request;
 
 class CategoryController extends Controller
 {
@@ -18,38 +19,42 @@ class CategoryController extends Controller
      */
     public function index(): JsonResponse
     {
-        return response()->json($this->stockService->listCategories());
+        return response()->json([
+            'data' => $this->stockService->listCategories()->map(fn (Category $category) => $this->transformCategory($category)),
+        ]);
     }
 
     /**
      * POST /tenant/categories
      */
-    public function store(Request $request): JsonResponse
+    public function store(StoreCategoryRequest $request): JsonResponse
     {
-        $data = $request->validate([
-            'name'  => ['required', 'string', 'max:80'],
-            'color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{3,6}$/'],
-        ]);
+        $category = $this->stockService->createCategory(
+            $request->validated(),
+            $request->file('image'),
+            $request,
+        );
 
-        $category = $this->stockService->createCategory($data);
-
-        return response()->json($category, 201);
+        return response()->json([
+            'data' => $this->transformCategory($category),
+        ], 201);
     }
 
     /**
      * PUT /tenant/categories/{category}
      */
-    public function update(Request $request, Category $category): JsonResponse
+    public function update(UpdateCategoryRequest $request, Category $category): JsonResponse
     {
-        $data = $request->validate([
-            'name'      => ['sometimes', 'required', 'string', 'max:80'],
-            'color'     => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{3,6}$/'],
-            'is_active' => ['sometimes', 'boolean'],
+        $category = $this->stockService->updateCategory(
+            $category,
+            $request->validated(),
+            $request->file('image'),
+            $request,
+        );
+
+        return response()->json([
+            'data' => $this->transformCategory($category),
         ]);
-
-        $category = $this->stockService->updateCategory($category, $data);
-
-        return response()->json($category);
     }
 
     /**
@@ -60,5 +65,25 @@ class CategoryController extends Controller
         $this->stockService->deleteCategory($category);
 
         return response()->json(['message' => 'Categoria removida com sucesso.']);
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    private function transformCategory(Category $category): array
+    {
+        return [
+            'id' => $category->id,
+            'name' => $category->name,
+            'slug' => $category->slug,
+            'icon' => $category->icon,
+            'image_url' => $category->image_url,
+            'color' => $category->color,
+            'sort_order' => (int) ($category->ordem_exibicao ?? 0),
+            'is_active' => (bool) $category->is_active,
+            'products_count' => (int) ($category->products_count ?? 0),
+            'created_at' => optional($category->created_at)?->toJSON(),
+            'updated_at' => optional($category->updated_at)?->toJSON(),
+        ];
     }
 }

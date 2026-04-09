@@ -36,10 +36,10 @@ class PaymentWebhookController extends Controller
 
         $order->update([
             'payment_status' => 'paid',
-            'status'         => 'confirmed',
+            'status'         => 'pending',
         ]);
 
-        $customerPhone = $phone !== '' ? $phone : (string) ($order->customer_phone ?? '');
+        $customerPhone = $phone !== '' ? $phone : (string) ($order->user?->primaryPhone?->phone ?? $order->user?->phone ?? '');
 
         if ($customerPhone === '') {
             Log::warning('PaymentWebhook: no customer phone to notify.', ['order_code' => $reference]);

@@ -31,7 +31,7 @@ class AdminDashboardController extends Controller
         $stats = [
             'total_deliveries' => Delivery::count(),
             'pending_deliveries' => Delivery::whereIn('status', ['new', 'pending'])->count(),
-            'completed_deliveries' => Delivery::where('status', 'delivered')->count(),
+            'completed_deliveries' => Delivery::whereIn('status', ['done', 'delivered'])->count(),
             'webhook_events' => WebhookEvent::count(),
             'total_stores' => Store::count(),
             'active_products' => Product::query()->where('is_active', true)->count(),

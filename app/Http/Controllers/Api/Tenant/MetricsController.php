@@ -16,7 +16,7 @@ class MetricsController extends Controller
      *
      * Full Início screen payload:
      *   - revenue card (today, yesterday, % change, sparkline, avg_ticket, totals)
-     *   - order_counts (new, preparing, out_for_delivery, delivered)
+    *   - order_counts (pending, accepted, preparing, delivering, done)
      *   - active_orders (latest 10)
      *   - hourly_distribution (series + peak_hour + promo_window)
      *   - sales_by_category (revenue + % per category for today)

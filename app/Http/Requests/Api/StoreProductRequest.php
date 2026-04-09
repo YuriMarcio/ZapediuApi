@@ -3,6 +3,7 @@
 namespace App\Http\Requests\Api;
 
 use Illuminate\Foundation\Http\FormRequest;
+use Illuminate\Validation\Rule;
 
 class StoreProductRequest extends FormRequest
 {
@@ -24,6 +25,18 @@ class StoreProductRequest extends FormRequest
         return [
             'store_id'                    => ['required', 'integer', 'exists:stores,id'],
             'category_id'                 => ['nullable', 'integer', 'exists:categories,id'],
+            'selection_group_id'          => ['nullable', 'integer', 'exists:selection_groups,id'],
+            'variation_group_id'          => [
+                'nullable',
+                'integer',
+                Rule::exists('variation_groups', 'id')->where(function ($query): void {
+                    $user = $this->user();
+
+                    if ($user?->company_id !== null) {
+                        $query->where('company_id', $user->company_id);
+                    }
+                }),
+            ],
             'name'                        => ['required', 'string', 'max:60'],
             'sku'                         => ['nullable', 'string', 'max:80'],
             'description'                 => ['nullable', 'string', 'max:120'],

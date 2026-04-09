@@ -51,7 +51,9 @@ class WhatsappController extends Controller
             'template' => ['required', 'string', 'max:240'],
         ]);
 
-        if (! is_string($order->customer_phone) || $order->customer_phone === '') {
+        $customerPhone = (string) ($order->user?->primaryPhone?->phone ?? $order->user?->phone ?? '');
+
+        if ($customerPhone === '') {
             return response()->json([
                 'message' => 'Pedido sem telefone do cliente.',
             ], 422);
@@ -61,7 +63,7 @@ class WhatsappController extends Controller
 
         $orchestrator->queueStatusNotification(
             $companyId,
-            $order->customer_phone,
+            $customerPhone,
             (string) $validated['template'],
             [
                 'order_code' => $order->code,

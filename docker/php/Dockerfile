@@ -10,10 +10,16 @@ RUN apt-get update && apt-get install -y \
     libicu-dev \
     libonig-dev \
     libpng-dev \
+    libjpeg62-turbo-dev \
+    libfreetype6-dev \
+    libwebp-dev \
     libxml2-dev \
-    && docker-php-ext-install pdo_mysql bcmath intl zip \
+    && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
+    && docker-php-ext-install pdo_mysql bcmath intl zip gd exif \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+RUN echo "upload_max_filesize=20M\npost_max_size=22M\nmemory_limit=256M" > /usr/local/etc/php/conf.d/uploads.ini
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 

@@ -14,5 +14,11 @@ export default defineConfig({
         watch: {
             ignored: ['**/storage/framework/views/**'],
         },
+        proxy: {
+            '/auth': 'http://localhost:8080',
+            '/public': 'http://localhost:8080',
+            '/admin': 'http://localhost:8080',
+            '/tenant': 'http://localhost:8080',
+        },
     },
 });

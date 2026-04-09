@@ -37,6 +37,7 @@ class Store extends Model implements HasMedia
         'city',
         'state',
         'is_active',
+        'timezone',
         'settings',
         'business_hours',
     ];

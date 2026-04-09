@@ -3,13 +3,17 @@
 namespace App\Services\Stores;
 
 use App\Models\Store;
+use App\Services\ImageUploadService;
 use App\Support\Audit\AuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class StoreOnboardingService
 {
-    public function __construct(private readonly AuditLogger $auditLogger) {}
+    public function __construct(
+        private readonly AuditLogger $auditLogger,
+        private readonly ImageUploadService $imageUploader,
+    ) {}
 
     public function listForUser(Request $request)
     {
@@ -40,6 +44,19 @@ class StoreOnboardingService
 
     public function updateIdentity(Store $store, array $data, Request $request): Store
     {
+        $logo = $request->file('logo');
+
+        \Illuminate\Support\Facades\Log::info('updateIdentity called', [
+            'store_id'   => $store->id,
+            'has_logo'   => $logo !== null,
+            'data_keys'  => array_keys($data),
+            'all_files'  => array_keys($request->allFiles()),
+        ]);
+
+        if ($logo !== null) {
+            $data['logo_path'] = $this->imageUploader->upload($logo, 'logos', 600, 80);
+        }
+
         $store->fill($data);
 
         if (isset($data['name']) && $data['name'] !== $store->getOriginal('name')) {

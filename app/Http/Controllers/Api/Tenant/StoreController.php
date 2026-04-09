@@ -34,7 +34,16 @@ class StoreController extends Controller
 
     public function updateIdentity(StoreIdentityRequest $request, Store $store): JsonResponse
     {
-        return response()->json($this->stores->updateIdentity($store, $request->validated(), $request));
+        $store = $this->stores->updateIdentity($store, $request->validated(), $request);
+
+        return response()->json([
+            'id'         => $store->id,
+            'name'       => $store->name,
+            'trade_name' => $store->name,
+            'slug'       => $store->slug,
+            'logo_path'  => $store->logo_path,
+            'logo_url'   => $store->logo_url,
+        ]);
     }
 
     public function updateAddress(StoreAddressRequest $request, Store $store): JsonResponse
