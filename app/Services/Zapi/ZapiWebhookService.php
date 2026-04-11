@@ -13,6 +13,7 @@ use App\Models\UserAddress;
 use App\Models\UserPhone;
 use App\Models\User;
 use App\Models\WebhookEvent;
+use App\Services\Payments\CheckoutService;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
@@ -27,7 +28,10 @@ class ZapiWebhookService
 
     private const PRODUCT_PAGE_SIZE = 5;
 
-    public function __construct(private readonly ZapiClient $zapiClient)
+    public function __construct(
+        private readonly ZapiClient $zapiClient,
+        private readonly CheckoutService $checkoutService,
+    )
     {
     }
 
@@ -2087,18 +2091,28 @@ class ZapiWebhookService
         );
 
         $order = Order::query()->create([
+            'company_id'       => $store?->company_id,
             'code'             => $orderCode,
             'user_id'          => $customerUser?->id,
             'store_id'         => $store?->id,
             'product_ids'      => array_values(array_map(static fn (array $item): int => (int) $item['product_id'], $items)),
             'status'           => 'pending',
             'payment_status'   => 'pending',
+            'payment_method'   => 'checkout',
             'notes'            => (string) ($customer['reference'] ?? ''),
             'subtotal'         => $subtotal,
             'delivery_fee'     => $deliveryFee,
             'total'            => $total,
             'ordered_at'       => now(),
-            'raw_payload'      => ['cart' => $cart, 'customer' => $customer],
+            'raw_payload'      => [
+                'cart' => $cart,
+                'customer' => $customer,
+                'checkout' => [
+                    'delivery_mode' => 'store',
+                    'source' => 'whatsapp',
+                    'public_token' => Str::random(40),
+                ],
+            ],
         ]);
 
         $this->syncUserPhone($customerUser, $this->normalizePhoneForLookup($phone));
@@ -2108,7 +2122,18 @@ class ZapiWebhookService
             (string) ($customer['reference'] ?? '')
         );
 
-        $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total, $orderCode);
+
+
+        // Sempre gera o link do frontend personalizado
+        $frontendBase = rtrim((string) config('services.zapi.payment_base_url', 'http://localhost:5173/checkout'), '/');
+        // Recupera o token público do pedido
+        $publicToken = data_get($order->raw_payload, 'checkout.public_token', '');
+        if ($publicToken !== '') {
+            $paymentLink = $frontendBase . '/' . $orderCode . '?token=' . $publicToken;
+        } else {
+            $paymentLink = $frontendBase . '/' . $orderCode;
+        }
+
         $amount      = 'R$ '.number_format($total, 2, ',', '.');
 
         // Build message body

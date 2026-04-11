@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AdminEndpointsController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\SellerController;
+use App\Http\Controllers\Api\PublicCheckoutController;
 use App\Http\Controllers\Api\Tenant\AuthController as TenantAuthController;
 use App\Http\Controllers\Api\Tenant\CategoryController;
 use App\Http\Controllers\Api\Tenant\CompanyController;
@@ -14,6 +15,7 @@ use App\Http\Controllers\Api\Tenant\ProductController;
 use App\Http\Controllers\Api\Tenant\SelectionGroupController;
 use App\Http\Controllers\Api\Tenant\StoreController;
 use App\Http\Controllers\Api\Tenant\VariationGroupController;
+use App\Http\Controllers\Api\Tenant\WalletController;
 use App\Http\Controllers\Api\Tenant\WhatsappController;
 use Illuminate\Support\Facades\Route;
 
@@ -35,7 +37,14 @@ Route::prefix('public')->as('public.')->group(function (): void {
     Route::post('/seller-codes/validate', [OnboardingController::class, 'validateSellerCode'])->name('seller-codes.validate');
     Route::post('/onboarding/stores', [OnboardingController::class, 'store'])->name('onboarding.stores');
     Route::get('/onboarding/metadata', [OnboardingController::class, 'metadata'])->name('onboarding.metadata');
+    Route::post('/checkout/pix', [MercadoPagoController::class, 'createPix']);
+    Route::post('/checkout/card', [MercadoPagoController::class, 'payCard']);
+
+    Route::get('/orders/{order:code}/checkout', [PublicCheckoutController::class, 'show'])->name('orders.checkout.show');
+    
+    Route::post('/orders/{order:code}/checkout', [PublicCheckoutController::class, 'store'])->name('orders.checkout.store');
 });
+
 Route::prefix('admin')->as('admin.')->group(function (): void {
 	Route::get('/endpoints', [AdminEndpointsController::class, 'index'])
 		->name('endpoints.index');
@@ -112,6 +121,14 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
     Route::post('/orders/{order}/accept', [OrderController::class, 'accept'])->name('orders.accept');
     Route::post('/orders/{order}/reject', [OrderController::class, 'reject'])->name('orders.reject');
     Route::post('/orders/{order}/advance', [OrderController::class, 'advance'])->name('orders.advance');
+
+    // Wallet / antecipacao
+    Route::get('/wallet/summary', [WalletController::class, 'summary'])
+        ->middleware('role:owner,manager,seller')
+        ->name('wallet.summary');
+    Route::post('/wallet/advances', [WalletController::class, 'requestAdvance'])
+        ->middleware('role:owner,manager,seller')
+        ->name('wallet.advances.store');
 
     // WhatsApp
     Route::post('/orders/{order}/notify-status', [WhatsappController::class, 'notifyOrderStatus'])
