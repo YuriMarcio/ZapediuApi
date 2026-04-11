@@ -39,6 +39,19 @@ return [
         'api_token' => env('ADMIN_API_TOKEN', ''),
     ],
 
+    'mercado_pago' => [
+        'base_url' => env('MERCADO_PAGO_BASE_URL', 'https://api.mercadopago.com'),
+        'access_token' => env('MERCADO_PAGO_ACCESS_TOKEN', ''),
+        'public_key' => env('MERCADO_PAGO_PUBLIC_KEY', ''),
+        'webhook_url' => env('MERCADO_PAGO_WEBHOOK_URL', ''),
+        'success_url' => env('MERCADO_PAGO_SUCCESS_URL', ''),
+        'failure_url' => env('MERCADO_PAGO_FAILURE_URL', ''),
+        'pending_url' => env('MERCADO_PAGO_PENDING_URL', ''),
+        'statement_descriptor' => env('MERCADO_PAGO_STATEMENT_DESCRIPTOR', 'DELIVERYZAP'),
+        'marketplace_name' => env('MERCADO_PAGO_MARKETPLACE_NAME', 'DeliveryZap'),
+        'timeout' => (int) env('MERCADO_PAGO_TIMEOUT', 20),
+    ],
+
     'zapi' => [
         'base_url' => env('ZAPI_BASE_URL', 'https://api.z-api.io'),
         'instance_id' => env('ZAPI_INSTANCE_ID'),
