@@ -2086,6 +2086,10 @@ class ZapiWebhookService
             $orderCode,
         );
 
+        // Gera token público de checkout
+        $publicToken = \Str::random(32);
+        $rawPayload = ['cart' => $cart, 'customer' => $customer, 'checkout' => ['public_token' => $publicToken]];
+
         $order = Order::query()->create([
             'code'             => $orderCode,
             'user_id'          => $customerUser?->id,
@@ -2098,7 +2102,7 @@ class ZapiWebhookService
             'delivery_fee'     => $deliveryFee,
             'total'            => $total,
             'ordered_at'       => now(),
-            'raw_payload'      => ['cart' => $cart, 'customer' => $customer],
+            'raw_payload'      => $rawPayload,
         ]);
 
         $this->syncUserPhone($customerUser, $this->normalizePhoneForLookup($phone));
@@ -2454,21 +2458,28 @@ class ZapiWebhookService
 
     private function buildPaymentLink(string $phone, string $storeId, array $items, float $total, ?string $orderCode = null): string
     {
-        $base = trim((string) config('services.zapi.payment_base_url', 'https://pagamento.deliveryzap.com/checkout'));
-
+        $base = trim((string) config('services.zapi.payment_base_url', 'http://localhost:5173/checkout'));
         if ($base === '') {
-            $base = 'https://pagamento.deliveryzap.com/checkout';
+            $base = 'http://localhost:5173/checkout';
         }
 
-        $payload = [
-            'phone'     => $phone,
-            'store'     => $storeId,
-            'amount'    => number_format($total, 2, '.', ''),
-            'items'     => base64_encode(json_encode($items, JSON_THROW_ON_ERROR)),
-            'reference' => $orderCode ?? Str::ulid()->toBase32(),
-        ];
+        // Busca o pedido pelo código
+        $order = null;
+        if ($orderCode) {
+            $order = \App\Models\Order::where('code', $orderCode)->first();
+        }
 
-        return $base.'?'.http_build_query($payload);
+        // Recupera o token público salvo no raw_payload
+        $token = '';
+        if ($order && is_array($order->raw_payload) && isset($order->raw_payload['checkout']['public_token'])) {
+            $token = $order->raw_payload['checkout']['public_token'];
+        } else {
+            $token = \Str::random(32);
+        }
+
+        // Monta o link amigável
+        $orderCodePath = $orderCode ?? \Str::ulid()->toBase32();
+        return rtrim($base, '/') . '/' . $orderCodePath . '?token=' . $token;
     }
 
     private function sendCatalogResponse(string $phone): bool

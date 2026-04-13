@@ -59,7 +59,6 @@ class Order extends Model
     {
         return $this->belongsTo(Delivery::class);
     }
-
     // ── Accessors ────────────────────────────────────────────────────────────
 
     /**
@@ -91,6 +90,11 @@ class Order extends Model
 
             return (int) $date->format('Y');
         });
+    }
+
+        public function getRouteKeyName()
+    {
+        return 'code';
     }
 
     /**
