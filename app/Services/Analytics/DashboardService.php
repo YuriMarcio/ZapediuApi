@@ -215,7 +215,7 @@ class DashboardService
         $since = Carbon::today()->subMonths($months - 1)->startOfMonth();
 
         return Order::query()
-            ->selectRaw("strftime('%Y-%m', ordered_at) as month")
+            ->selectRaw("DATE_FORMAT(ordered_at, '%Y-%m') as month")
             ->selectRaw('ROUND(SUM(total), 2) as revenue')
             ->whereNotIn('status', ['cancelled'])
             ->where('ordered_at', '>=', $since)

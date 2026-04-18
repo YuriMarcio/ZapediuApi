@@ -13,6 +13,12 @@ class PublicCheckoutController extends Controller
 {
     public function show(Request $request, Order $order): JsonResponse
     {
+        logger()->info('Acessando checkout público', [
+            'order_code' => $order->code,
+            'query_token' => $request->query('token'),
+            'input_token' => $request->input('token'),
+            'header_token' => $request->header('X-Checkout-Token'),
+        ]);
         
         if ($response = $this->ensureAuthorized($order, $request)) {
             return $response;
@@ -50,7 +56,7 @@ class PublicCheckoutController extends Controller
                 'delivery_mode' => data_get($order->raw_payload, 'checkout.delivery_mode', 'store'),
             ],
             'payment_methods' => ['pix', 'card'],
-        ]);
+        ], 200, ['Content-Type' => 'application/json']);
     }
 
     public function store(Order $order, PublicCheckoutRequest $request, CheckoutService $checkout): JsonResponse
@@ -68,7 +74,7 @@ class PublicCheckoutController extends Controller
 
         $payload = $checkout->createForOrder($order, $request->validated(), $request);
 
-        return response()->json($payload, 201);
+        return response()->json($payload, 201, ['Content-Type' => 'application/json']);
     }
 
     private function serializeItems(Order $order): array
