@@ -42,6 +42,16 @@ class OnboardingService
                 'api_token'   => Str::random(80),
             ]);
 
+            // Cria a wallet vinculada à empresa
+            $company->wallet()->create([
+                'plan_id' => $plan->id,
+                'balance_pix' => 0,
+                'balance_card' => 0,
+                'balance_total' => 0,
+                'is_enabled_withdrawal' => false,
+                'is_active' => false,
+            ]);
+
             /** @var User $owner */
             $owner = User::query()->create([
                 'company_id' => $company->id,

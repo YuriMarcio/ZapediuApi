@@ -35,11 +35,15 @@ Route::prefix('auth')->as('auth.')->group(function (): void {
 
 Route::prefix('public')->as('public.')->group(function (): void {
     Route::get('/plans', [PlanController::class, 'index'])->name('plans.index');
+    
+    Route::get('/mercadopago/callback', [MercadoPagoController::class, 'handleCallback'])
+        ->name('mp.callback');
+
     Route::post('/seller-codes/validate', [OnboardingController::class, 'validateSellerCode'])->name('seller-codes.validate');
     Route::post('/onboarding/stores', [OnboardingController::class, 'store'])->name('onboarding.stores');
     Route::get('/onboarding/metadata', [OnboardingController::class, 'metadata'])->name('onboarding.metadata');
     Route::post('/checkout/pix', [MercadoPagoController::class, 'createPix']);
-    Route::post('/checkout/card', [MercadoPagoController::class, 'payCard']);
+    Route::post('/checkout/card', [MercadoPagoController::class, 'createCardPayment']);
 
     Route::get('/orders/{order:code}/checkout', [PublicCheckoutController::class, 'show'])->name('orders.checkout.show');
     
@@ -129,6 +133,8 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
     Route::post('/wallet/advances', [WalletController::class, 'requestAdvance'])
         ->middleware('role:owner,manager,seller')
         ->name('wallet.advances.store');
+
+
 
     // WhatsApp
     Route::post('/orders/{order}/notify-status', [WhatsappController::class, 'notifyOrderStatus'])

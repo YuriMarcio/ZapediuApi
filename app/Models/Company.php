@@ -30,6 +30,11 @@ class Company extends Model
         'is_active',
     ];
 
+        public function wallet(): HasOne
+    {
+        return $this->hasOne(\App\Models\Wallet::class);
+    }
+
     protected $casts = [
         'shipping_rules' => 'array',
         'business_hours' => 'array',

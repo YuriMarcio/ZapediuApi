@@ -2086,13 +2086,18 @@ class ZapiWebhookService
             $orderCode,
         );
 
+        Log::info('testando se passa aqui ');
+
         // Gera token público de checkout
         $publicToken = \Str::random(32);
         $rawPayload = ['cart' => $cart, 'customer' => $customer, 'checkout' => ['public_token' => $publicToken]];
 
+        Log::info('Creating order with code '.$orderCode, ['store' => $store?->toArray()]);
+
         $order = Order::query()->create([
             'code'             => $orderCode,
             'user_id'          => $customerUser?->id,
+            'company_id'       => $store?->company_id,
             'store_id'         => $store?->id,
             'product_ids'      => array_values(array_map(static fn (array $item): int => (int) $item['product_id'], $items)),
             'status'           => 'pending',
