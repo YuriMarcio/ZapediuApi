@@ -9,7 +9,12 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
-
+/**
+ * @property string $slug
+ * @property int $id
+ * @property string $name
+ * @property string $category
+ */
 class Store extends Model implements HasMedia
 {
     use BelongsToCompany;

@@ -164,6 +164,8 @@ class ZapiClient
         return Http::baseUrl($this->baseUrl())
             ->acceptJson()
             ->asJson()
+            ->timeout(15)        // ← timeout de 15s na requisição
+            ->connectTimeout(5)  // ← timeout de 5s na conexão
             ->withHeaders([
                 'Client-Token' => (string) config('services.zapi.client_token'),
             ]);
@@ -189,4 +191,5 @@ class ZapiClient
     {
         return str_ends_with($this->baseUrl(), $path) ? '' : $path;
     }
+
 }

@@ -2,7 +2,7 @@
 
 namespace App\Jobs\Whatsapp;
 
-use App\Services\Zapi\ZapiWebhookService;
+use App\Services\Zapi\Flows\CartFlow;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use Illuminate\Support\Facades\Cache;
@@ -17,7 +17,7 @@ class SendCartFeedbackJob implements ShouldQueue
     ) {
     }
 
-    public function handle(ZapiWebhookService $service): void
+    public function handle(CartFlow $service): void
     {
         // Another add came in after us — that job's feedback will include everything
         $current = (int) Cache::get('zapi:feedback:nonce:'.$this->phone, 0);
