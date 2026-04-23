@@ -30,46 +30,53 @@ use App\Services\Zapi\Handlers\ProductsHandler;
 
 class ZapiWebhookService
 {
-    // Prefixo para cache de estado do fluxo
+    // Prefixo para cache de estado do fluxo (usado para armazenar o progresso do usuário)
     private const FLOW_STATE_CACHE_PREFIX = 'zapi:flow:state:';
 
-    // Quantidade de lojas por página no carrossel
+    // Quantidade de lojas exibidas por página no carrossel
     private const STORE_PAGE_SIZE = 9;
 
-    // Quantidade de produtos por página no carrossel
+    // Quantidade de produtos exibidos por página no carrossel
     private const PRODUCT_PAGE_SIZE = 5;
 
-    // Injeta as dependências necessárias via construtor
+    /**
+     * Injeta as dependências necessárias para o serviço de webhook do Zapi.
+     * Cada handler/serviço é responsável por uma parte do fluxo de atendimento.
+     */
     public function __construct(
         private readonly ZapiClient $zapiClient,
         private readonly FlowManager $flow,
         private readonly PayloadExtractor $extractor,
-        private readonly StoreHandle $storeHandle, // Nome corrigido aqui
+        private readonly StoreHandle $storeHandle,
         private readonly GreetingFlow $greetingFlow,
         private readonly TextHandler $textHandler,
         private readonly ButtonHandler $buttonHandler
     ) {
     }
 
-    // Método principal que recebe o payload do webhook
+    /**
+     * Método principal chamado ao receber um webhook do Zapi.
+     * Cria o registro do evento, processa delivery (se houver) e dispara resposta automática.
+     */
     public function ingest(array $payload): WebhookEvent
     {
         Log::info('Ingesting Zapi webhook event.', ['payload' => $payload]);
-        // Cria um registro do evento recebido
+
+        // Cria um registro do evento recebido no banco
         $event = WebhookEvent::create([
-            'provider' => 'zapi', // Define o provedor
-            'event_type' => $this->eventType($payload), // Tipo do evento
-            'external_id' => $this->resolveExternalId($payload), // ID externo
-            'payload' => $payload, // Payload completo
-            'processed_at' => now(), // Data/hora de processamento
+            'provider' => 'zapi',
+            'event_type' => $this->eventType($payload),
+            'external_id' => $this->resolveExternalId($payload),
+            'payload' => $payload,
+            'processed_at' => now(),
         ]);
 
         Log::info('Webhook event recebido', ['event' => $event]);
 
-        // Extrai atributos de delivery do payload
+        // Extrai atributos de delivery do payload (caso seja um evento relacionado a entrega/pedido)
         $deliveryAttributes = $this->extractDeliveryAttributes($payload);
 
-        // Se houver atributos de delivery, salva ou atualiza o registro
+        // Se houver dados de delivery, salva ou atualiza o registro correspondente
         if ($deliveryAttributes !== null) {
             $lookupExternalId = $deliveryAttributes['external_id'] ?? null;
             $lookupOrderCode = $deliveryAttributes['order_code'] ?? null;
@@ -82,64 +89,86 @@ class ZapiWebhookService
                 $delivery = new Delivery();
             }
 
-            $delivery->fill($deliveryAttributes); // Preenche os dados
+            $delivery->fill($deliveryAttributes); // Preenche os dados do delivery
             $delivery->save(); // Salva no banco
         }
 
-        // Chama o método para possivelmente enviar uma resposta automática
+        // Dispara resposta automática ao usuário, se aplicável
         $this->maybeSendAutoReply($payload);
 
         // Retorna o evento criado
         return $event;
     }
-    // Decide se deve enviar uma resposta automática ao usuário
+
+    /**
+     * Decide se deve enviar uma resposta automática ao usuário, conforme regras de negócio.
+     * Pode disparar fluxos de categoria, botões ou mensagem de boas-vindas.
+     */
     public function maybeSendAutoReply(array $payload): void
     {
+        // Verifica se o auto-reply está habilitado na configuração
         if (! (bool) config('services.zapi.auto_reply_enabled')) {
             return;
         }
 
+        // Ignora mensagens enviadas pelo próprio sistema (apenas responde a mensagens recebidas)
         if ($this->isOutgoingMessage($payload)) {
             return;
         }
 
+        // Extrai o telefone do usuário que enviou a mensagem
         $phone = $this->resolveIncomingPhone($payload);
 
         if ($phone === null) {
             return;
         }
 
+        // Se for um fluxo de comércio (categoria/botão/texto), trata e responde
         if ($this->handleCommerceFlow($payload, $phone)) {
             return;
         }
 
+        // Se não for comércio, verifica se há texto para responder
         $messageText = $this->resolveIncomingMessageText($payload);
 
         if ($messageText === null) {
             return;
         }
 
-        $this->sendWelcomePrompt($phone);
+        // Se não caiu em nenhum fluxo anterior, envia mensagem de boas-vindas
+        $this->sendWelcomeWay($phone);
     }
 
+    /**
+     * Verifica se a mensagem recebida é uma mensagem enviada pelo sistema (outgoing).
+     */
     private function isOutgoingMessage(array $payload): bool
     {
         return $this->extractor->isOutgoingMessage($payload);
     }
 
+    /**
+     * Extrai o telefone do usuário a partir do payload recebido.
+     */
     private function resolveIncomingPhone(array $payload): ?string
     {
         return $this->extractor->resolveIncomingPhone($payload);
     }
 
+    /**
+     * Extrai o texto da mensagem recebida, se houver.
+     */
     private function resolveIncomingMessageText(array $payload): ?string
     {
         return $this->extractor->resolveIncomingMessageText($payload);
     }
 
+    /**
+     * Resolve o ID do botão ou opção selecionada pelo usuário, se houver.
+     */
     public function resolveButtonReplyId(array $payload): ?string
     {
-        $id = $payload['buttonReply']['buttonId']  // ← era 'id', agora 'buttonId'
+        $id = $payload['buttonReply']['buttonId']
             ?? $payload['buttonReply']['id']
             ?? $payload['listReply']['buttonId']
             ?? $payload['listReply']['id']
@@ -153,12 +182,18 @@ class ZapiWebhookService
         return strtolower(trim((string) $id));
     }
 
+    /**
+     * Extrai o slug da categoria selecionada, se houver.
+     */
     private function resolveSelectedCategoryId(array $payload): ?string
     {
         return $this->extractor->resolveSelectedCategoryId($payload);
     }
 
-    private function sendWelcomePrompt(string $phone): void
+    /**
+     * Envia mensagem de boas-vindas ao usuário, usando o GreetingFlow.
+     */
+    private function sendWelcomeWay(string $phone): void
     {
         try {
             $this->greetingFlow->sendWelcomePrompt($phone);
@@ -169,7 +204,11 @@ class ZapiWebhookService
             ]);
         }
     }
-    // Lida com o fluxo de comércio (categorias, botões, texto)
+
+    /**
+     * Lida com o fluxo de comércio: categoria, botões ou texto.
+     * Se algum desses fluxos for tratado, retorna true.
+     */
     private function handleCommerceFlow(array $payload, string $phone): bool
     {
         $selectedCategorySlug = $this->resolveSelectedCategoryId($payload);
@@ -180,10 +219,12 @@ class ZapiWebhookService
             'messageText' => $this->resolveIncomingMessageText($payload),
         ]);
 
+        // Se o usuário selecionou uma categoria, envia as lojas dessa categoria
         if ($selectedCategorySlug !== null) {
             return $this->sendCategoryStores($phone, $selectedCategorySlug);
         }
 
+        // Se o usuário clicou em um botão, trata o fluxo do botão
         $buttonId = strtolower(trim((string) ($this->resolveButtonReplyId($payload) ?? '')));
 
         if ($buttonId !== '') {
@@ -191,6 +232,7 @@ class ZapiWebhookService
             return $this->handleFlowButton($phone, $buttonId);
         }
 
+        // Se o usuário enviou texto, trata o fluxo de texto
         $messageText = $this->resolveIncomingMessageText($payload);
 
         if ($messageText === null) {
@@ -199,6 +241,10 @@ class ZapiWebhookService
 
         return $this->handleFlowText($phone, $messageText);
     }
+
+    /**
+     * Encaminha o tratamento do botão para o ButtonHandler.
+     */
     private function handleFlowButton(string $phone, string $buttonId): bool
     {
         Log::info('handleFlowButton delegating to ButtonHandler', ['buttonId' => $buttonId]);
@@ -213,6 +259,10 @@ class ZapiWebhookService
             return false;
         }
     }
+
+    /**
+     * Encaminha o tratamento do texto para o TextHandler.
+     */
     private function handleFlowText(string $phone, string $messageText): bool
     {
         try {
@@ -227,7 +277,10 @@ class ZapiWebhookService
             return false;
         }
     }
-    // Envia mensagem explicando como funciona o sistema
+
+    /**
+     * Envia mensagem explicando como funciona o sistema para o usuário.
+     */
     private function sendHowItWorks(string $phone): bool
     {
         $message = 'Voce escolhe uma categoria, seleciona uma loja e finaliza tudo no WhatsApp. Simples e rapido.';

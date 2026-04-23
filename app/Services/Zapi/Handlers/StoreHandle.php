@@ -186,7 +186,105 @@ class StoreHandle
         $state['selected_store_id'] = $store->slug;
         $this->saveFlowState($phone, $state);
 
-        return $this->sendProductsCarousel($phone, (string) $store->slug, 0);
+        // Chame o novo método para mostrar as categorias
+        return $this->sendCategoriesCarousel($phone, $store->slug);
     }
 
+    public function sendCategoriesCarousel(string $phone, string $storeSlug): bool
+    {
+        $store = Store::query()->where('slug', $storeSlug)->with('categories')->first();
+        if (!$store || !$store->categories) {
+            // Trate caso não haja categorias
+            return false;
+        }
+
+        $cards = [];
+        foreach ($store->categories as $category) {
+            $cards[] = [
+                'text' => $category->name,
+                'image' => $category->image_url ?? 'https://picsum.photos/seed/'.$category->slug.'/600/600',
+                'buttons' => [
+                    [
+                        'id' => 'view_category_'.$category->slug,
+                        'label' => 'Ver produtos',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
+        }
+
+        try {
+            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria:', $cards);
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send category carousel.', ['error' => $exception->getMessage()]);
+            return false;
+        }
+    }
+    public function sendProductsByCategoryCarousel(string $phone, string $storeSlug, string $categorySlug, int $offset = 0): bool
+    {
+        $store = Store::query()->where('slug', $storeSlug)->first();
+        if (!$store) {
+            $this->zapiClient->sendText($phone, 'Loja não encontrada.');
+            return false;
+        }
+
+        $category = $store->categories()->where('slug', $categorySlug)->first();
+        if (!$category) {
+            $this->zapiClient->sendText($phone, 'Categoria não encontrada.');
+            return false;
+        }
+
+        // Busca produtos ativos da categoria na loja
+        $productsQuery = $category->products()
+            ->where('store_id', $store->id)
+            ->where('is_active', true)
+            ->orderBy('name');
+
+        $total = $productsQuery->count();
+        $products = $productsQuery->skip($offset)->take(self::STORE_PAGE_SIZE)->get();
+
+        if ($products->isEmpty()) {
+            $this->zapiClient->sendText($phone, 'Não há produtos nesta categoria.');
+            return true;
+        }
+
+        $cards = [];
+        foreach ($products as $product) {
+            $cards[] = [
+                'text' => $product->name,
+                'image' => $product->image_url ?? 'https://picsum.photos/seed/'.$product->slug.'/600/600',
+                'buttons' => [
+                    [
+                        'id' => 'view_product_'.$product->slug,
+                        'label' => 'Ver detalhes',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
+        }
+
+        // Paginação: se houver mais produtos, adiciona card de "Ver mais"
+        if ($offset + self::STORE_PAGE_SIZE < $total) {
+            $cards[] = [
+                'text' => 'Ver mais produtos',
+                'image' => 'https://picsum.photos/seed/mais-produtos/600/600',
+                'buttons' => [
+                    [
+                        'id' => 'view_more_products_'.$storeSlug.'_'.$categorySlug.'_'.($offset + self::STORE_PAGE_SIZE),
+                        'label' => 'Ver mais',
+                        'type' => 'REPLY',
+                    ],
+                ],
+            ];
+        }
+
+        try {
+            $this->zapiClient->sendCarousel($phone, 'Produtos da categoria: '.$category->name, $cards);
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send products carousel.', ['error' => $exception->getMessage()]);
+            return false;
+        }
+    }
 }

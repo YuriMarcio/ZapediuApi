@@ -97,6 +97,7 @@ class ButtonHandler
             return $this->categoriesHandle->handleCategorySearch($phone, $buttonId);
         }
 
+
         // Seleção de Variação de Produto
         if (str_starts_with($buttonId, 'flow_variation_')) {
             return $this->cartFlow->handleVariationSelected($phone, str_replace('flow_variation_', '', $buttonId));
@@ -121,6 +122,17 @@ class ButtonHandler
                 $addPayload['product_id'],
                 $addPayload['quantity']
             );
+        }
+
+        if (str_starts_with($buttonId, 'view_category_')) {
+            $categorySlug = substr($buttonId, strlen('view_category_'));
+            $state = $this->flow->getState($phone);
+            $storeSlug = $state['selected_store_id'] ?? null;
+            if ($storeSlug) {
+                // Chama o método com paginação inicial 0
+                return $this->storeHandle->sendProductsByCategoryCarousel($phone, $storeSlug, $categorySlug, 0);
+            }
+            return false;
         }
 
         return false;
