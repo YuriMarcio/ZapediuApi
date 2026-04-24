@@ -37,6 +37,7 @@ class ZapiClient
         return $this->decodeResponse($response);
     }
 
+
     public function sendButtonList(string $phone, string $message, array $buttons): array
     {
         $path = $this->endpointPath('/send-button-list');
@@ -54,6 +55,22 @@ class ZapiClient
                         $buttons
                     )),
                 ],
+            ])
+            ->throw();
+
+        return $this->decodeResponse($response);
+    }
+
+    public function replyMessage(string $phone, string $message, string $messageId): array
+    {
+        $path = $this->endpointPath('/send-text');
+
+        $response = $this->http()
+            ->post($path, [
+                'phone' => $phone,
+                'message' => $message,
+                // Algumas versões da Z-API esperam "messageId", outras podem falhar se a mensagem for muito antiga
+                'messageId' => $messageId,
             ])
             ->throw();
 
@@ -164,6 +181,8 @@ class ZapiClient
         return Http::baseUrl($this->baseUrl())
             ->acceptJson()
             ->asJson()
+            ->timeout(15)        // ← timeout de 15s na requisição
+            ->connectTimeout(5)  // ← timeout de 5s na conexão
             ->withHeaders([
                 'Client-Token' => (string) config('services.zapi.client_token'),
             ]);
@@ -189,4 +208,5 @@ class ZapiClient
     {
         return str_ends_with($this->baseUrl(), $path) ? '' : $path;
     }
+
 }

@@ -10,6 +10,9 @@ class ProcessZapiWebhookJob implements ShouldQueue
 {
     use Queueable;
 
+    public int $tries = 5;
+    public int $backoff = 10;
+    
     /**
      * @param  array<string, mixed>  $payload
      */
