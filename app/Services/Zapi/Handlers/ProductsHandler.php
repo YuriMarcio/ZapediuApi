@@ -97,18 +97,32 @@ class ProductsHandler
         ];
 
         try {
-            // Usando a intro do Builder para centralizar o design (Problema 4)
             $introMessage = $this->carouselBuilder->buildMenuIntroMessage($store);
-            $this->zapiClient->sendCarousel($phone, $introMessage, $cards);
 
+            $response = $this->zapiClient->sendCarousel($phone, $introMessage, $cards);
+
+            if (isset($response['messageId'])) {
+                $state = $this->flow->getState($phone);
+                $state['last_product_menu_id'] = $response['messageId'];
+                $this->flow->saveState($phone, $state);
+
+                // ✅ Log de Sucesso: Confirma que o ID foi pego e salvo
+                \Illuminate\Support\Facades\Log::info('Menu messageId salvo com sucesso', [
+                    'phone' => $phone,
+                    'messageId' => $response['messageId']
+                ]);
+            } else {
+                // ⚠️ Log de Alerta: Se cair aqui, a Z-API mudou a resposta ou deu algum erro silencioso
+                \Illuminate\Support\Facades\Log::warning('Z-API não retornou messageId no envio do carrossel', [
+                    'phone' => $phone,
+                    'response' => $response
+                ]);
+            }
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send products carousel.', [
-                'phone' => $phone,
-                'store_id' => $storeId,
                 'error' => $exception->getMessage(),
             ]);
-
             return false;
         }
     }

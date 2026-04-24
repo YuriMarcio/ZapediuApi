@@ -105,30 +105,26 @@ class CheckoutFlow
         return $this->startEmailVerificationForNewNumber($phone);
     }
 
-    private function sendAddressConfirmation(string $phone, array $customer): bool
+    public function sendAddressConfirmation(string $phone, array $customer): bool
     {
-        $state = $this->flow->getState($phone);
-        $state['checkout_step'] = 'confirm_address';
-        $this->saveFlowState($phone, $state);
+        // ❌ Remova qualquer coisa parecida com: "👋 Olá, " . $customer['name'] . "!"
 
-        $name      = (string) ($customer['name'] ?? '');
-        $address   = (string) ($customer['address'] ?? '');
-        $reference = (string) ($customer['reference'] ?? '');
-
-        $message = ($name ? "👋 Olá, *{$name}*!\n\n" : '')
-            ."📍 *Entrega será em:*\n"
-            .$address
-            .($reference ? "\n📌 Referência: {$reference}" : '')
-            ."\n\nEstá correto?";
+        // ✅ Deixe a mensagem direto ao ponto:
+        $message = "📍 *Entrega será em:*\n" .
+                   "{$customer['address']}\n" .
+                   ($customer['reference'] ? "📌 *Referência:* {$customer['reference']}\n\n" : "\n") .
+                   "Está correto?";
 
         try {
+            // Remova a palavra "return" daqui
             $this->zapiClient->sendButtonActions($phone, $message, [
                 ['id' => 'checkout_confirm_address', 'label' => '✅ Confirmar endereço'],
-                ['id' => 'checkout_change_address',  'label' => '✏️ Alterar endereço'],
+                ['id' => 'checkout_change_address', 'label' => '✏️ Alterar endereço'],
             ]);
 
             return true;
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
+            Log::error('Erro ao enviar confirmação de endereço', ['error' => $e->getMessage()]);
             return false;
         }
     }
@@ -611,17 +607,20 @@ class CheckoutFlow
         $state['checkout_step'] = 'checkout_summary';
         $this->saveFlowState($phone, $state);
 
+        // 👇 A MÁGICA ACONTECE AQUI: Transforma o array em texto
+        $message = implode("\n", $lines);
+
         try {
-            $this->zapiClient->sendButtonActions(
-                $phone,
-                implode("\n", $lines),
-                [['id' => 'checkout_pay_now', 'label' => '💳 Pagar agora']]
-            );
+            // Removemos o "return" daqui
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'checkout_pay_now', 'label' => '💳 Pagar agora'],
+                ['id' => 'flow_edit_cart',   'label' => '✏️ Editar pedido'],
+            ]);
 
+            // E colocamos o return true aqui!
             return true;
-        } catch (\Throwable $exception) {
-            Log::warning('Failed to send order summary.', ['phone' => $phone, 'error' => $exception->getMessage()]);
-
+        } catch (\Throwable $e) {
+            Log::error('Erro ao enviar resumo final', ['error' => $e->getMessage()]);
             return false;
         }
     }
@@ -731,28 +730,15 @@ class CheckoutFlow
         $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total, $orderCode);
         $amount      = 'R$ '.number_format($total, 2, ',', '.');
 
-        // Build message body
         $msgLines   = [];
-        $msgLines[] = '🧾 *Nº DO PEDIDO:*';
-        $msgLines[] = '`'.$orderCode.'`';
+        $msgLines[] = 'Tudo certo com o seu pedido! ✅';
         $msgLines[] = '';
-
-        foreach ($items as $item) {
-            $label      = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
-            $lineTotal  = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
-            $msgLines[] = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
-            if (! empty($item['observation'])) {
-                $msgLines[] = '   📝 '.$item['observation'];
-            }
-        }
-
+        $msgLines[] = '🧾 *Pedido:* ' . $orderCode;
+        $msgLines[] = '💰 *Total a pagar:* ' . $amount;
         $msgLines[] = '';
-        $msgLines[] = '🧮 *Subtotal: R$ '.number_format($subtotal, 2, ',', '.').'*';
-        $msgLines[] = '🚚 *Taxa de entrega:* '.($deliveryFee > 0 ? 'R$ '.number_format($deliveryFee, 2, ',', '.') : 'Grátis');
-        $msgLines[] = '💰 *Total: '.$amount.'*';
+        $msgLines[] = '🔒 _Aceitamos PIX ou Cartão em ambiente seguro._';
         $msgLines[] = '';
-        $msgLines[] = '💳 Aceitamos *PIX e cartão*';
-        $msgLines[] = '_Após o pagamento, você receberá a confirmação aqui mesmo. 🙏_';
+        $msgLines[] = 'É só clicar no botão abaixo. Assim que o pagamento for aprovado, te aviso aqui mesmo! 👇';
 
         try {
             $this->zapiClient->sendButtonActions(

@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
+use App\Models\Category;
+
 /**
  * @property string $slug
  * @property int $id
@@ -62,6 +64,12 @@ class Store extends Model implements HasMedia
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    public function categories(): HasMany
+    {
+        // Isso assume que sua tabela 'categories' tem uma 'store_id'
+        return $this->hasMany(Category::class);
     }
 
     public function products(): HasMany

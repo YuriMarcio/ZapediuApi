@@ -14,13 +14,15 @@ use App\Services\Zapi\ZapiClient;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use App\Services\Zapi\Handlers\StoreHandle;
 
 class CartFlow
 {
     // Propriedades definidas (Problema 1)
     public function __construct(
         private FlowManager $flow,
-        private ZapiClient $zapiClient
+        private ZapiClient $zapiClient,
+        private StoreHandle $storeHandle
     ) {
     }
 
@@ -192,6 +194,126 @@ class CartFlow
         );
     }
 
+    public function removeItem(string $phone, int $index): bool
+    {
+        $state = $this->flow->getState($phone);
+        $cart = $state['cart'] ?? ['items' => []];
+
+        // Verifica se o item realmente existe (evita erro se o usuário clicar duas vezes no mesmo botão)
+        if (!isset($cart['items'][$index])) {
+            return true;
+        }
+
+        // Guarda o nome para o feedback
+        $removedItem = $cart['items'][$index];
+        $itemName = $removedItem['product_name'];
+
+        // Remove do array e reordena os índices (Importante!)
+        unset($cart['items'][$index]);
+        $cart['items'] = array_values($cart['items']);
+
+        // Salva o novo estado
+        $state['cart'] = $cart;
+        $this->flow->saveState($phone, $state);
+
+        // Feedback visual (Dispara a mensagem de texto)
+        $this->zapiClient->sendText($phone, "🗑️ *{$itemName}* removido do seu carrinho.");
+
+        // Se esvaziou, avisa e volta pro cardápio
+        if (empty($cart['items'])) {
+            $this->zapiClient->sendText($phone, "Seu carrinho agora está vazio.");
+            // Opcional: chamar this->returnToMenu($phone);
+            return true;
+        }
+
+        // Se ainda tem itens, envia o Resumo Atualizado
+        return $this->sendCartSummary($phone);
+    }
+    public function handleAddMoreItems(string $phone): bool
+    {
+        $state = $this->flow->getState($phone);
+
+        // Tenta pegar o store_id do carrinho ou do estado selecionado
+        $storeSlug = $state['cart']['store_id'] ?? $state['selected_store_id'] ?? null;
+
+        if ($storeSlug) {
+            // Envia uma mensagem curta de contexto para o usuário não se perder
+            $this->zapiClient->sendText($phone, "Certo! Olhe o cardápio aqui embaixo e escolha o que deseja adicionar: 👇");
+
+            // Dispara o carrossel de produtos novamente
+            // Note: use o método que você já tem no seu StoreHandle
+            return $this->storeHandle->sendProductsCarousel($phone, $storeSlug, 0);
+        }
+
+        // Fallback: Se por algum motivo o estado sumiu, manda escolher a loja
+        return $this->zapiClient->sendText($phone, "Para adicionar itens, escolha uma loja primeiro digitando *Cardápio*.");
+    }
+
+    public function sendEditCartCarousel(string $phone): bool
+    {
+        $state = $this->flow->getState($phone);
+        $items = $this->normalizeCartItems($state['cart']['items'] ?? []);
+
+        if (empty($items)) {
+            $this->zapiClient->sendText($phone, 'Seu carrinho já está vazio.');
+            return true;
+        }
+
+        $cards = [];
+
+        foreach ($items as $index => $item) {
+            $label = $item['product_name'] . ($item['variation_name'] ? " ({$item['variation_name']})" : "");
+            $valorTotalItem = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+
+            // 🔍 1. Busca o produto no banco de dados para pegar a foto real
+            $product = \App\Models\Product::find($item['product_id']);
+
+            // 🖼️ 2. Regra da Imagem: Se existir, usa a do banco. Se não, usa o padrão.
+            // Nota: Substitua "image_path" pelo nome correto da sua coluna, se for diferente.
+            $imageUrl = ($product && !empty($product->image_path))
+                        ? $product->image_path
+                        : 'https://picsum.photos/seed/padrao-'.$item['product_id'].'/600/600';
+
+            $cards[] = [
+                'text' => "*{$item['quantity']}x {$label}*\nValor: R$ " . number_format($valorTotalItem, 2, ',', '.'),
+                'image' => $imageUrl, // <--- Aplicamos a imagem aqui!
+                'buttons' => [
+                    [
+                        'id' => "cart_remove_{$index}",
+                        'label' => '❌ Remover Item',
+                        'type' => 'REPLY'
+                    ]
+                ]
+            ];
+
+            // Limite do WhatsApp (máx 10 cards)
+            if (count($cards) >= 9) {
+                break;
+            }
+        }
+
+        // Card Fixo de "Adicionar Mais" no final
+        $cards[] = [
+            'text' => '*Esqueceu algo?*\nVocê pode voltar ao cardápio e adicionar mais itens.',
+            'image' => 'https://picsum.photos/seed/add-more/600/600', // Imagem padrão do botão final
+            'buttons' => [
+                [
+                    'id' => 'cart_add_more',
+                    'label' => '➕ Adicionar mais',
+                    'type' => 'REPLY'
+                ]
+            ]
+        ];
+
+        try {
+            $this->zapiClient->sendCarousel($phone, "✏️ *Modo de Edição:*", $cards);
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Erro ao enviar carrossel de edição: ' . $e->getMessage());
+            return false;
+        }
+    }
+
     private function commitAndSendFeedback(
         string $phone,
         string $storeId,
@@ -201,15 +323,14 @@ class CartFlow
         float $variationAdditionalPrice,
         int $quantity
     ): bool {
-        $lock = Cache::lock('zapi:cart:lock:'.$phone, 10);
-
-        $product = null;
+        $lock = Cache::lock('zapi:cart:lock:' . $phone, 10);
 
         try {
             $lock->block(5);
 
+            // 1. BUSCA LOJA E PRODUTO
             $store = Store::query()->where('is_active', true)->where('slug', $storeId)->first();
-            if ($store === null) {
+            if (!$store) {
                 return false;
             }
 
@@ -219,29 +340,23 @@ class CartFlow
                 ->where('id', $productId)
                 ->first();
 
-            if ($product === null) {
+            if (!$product) {
                 return false;
             }
 
-            // Re-read state inside the lock so racing adds are serialised
+            // 2. ATUALIZA O ESTADO DO CARRINHO
             $state = $this->flow->getState($phone);
             $cart  = $state['cart'] ?? ['store_id' => null, 'items' => []];
 
-            if (($cart['store_id'] ?? null) !== null
-                && $cart['store_id'] !== $storeId
-                && is_array($cart['items'] ?? null)
-                && $cart['items'] !== []) {
+            // Validação de troca de loja
+            if (($cart['store_id'] ?? null) !== null && $cart['store_id'] !== $storeId && !empty($cart['items'])) {
                 $lock->release();
-
                 return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, $productId);
             }
 
-            if (! isset($cart['items']) || ! array_is_list((array) $cart['items'])) {
-                $cart['items'] = [];
-            }
-
+            // Adiciona o item ao array do carrinho
             $cart['store_id'] = $storeId;
-            $cart['items'][]  = [
+            $cart['items'][] = [
                 'product_id'       => $productId,
                 'product_name'     => (string) $product->name,
                 'base_price'       => (float) $product->price,
@@ -252,34 +367,32 @@ class CartFlow
                 'observation'      => null,
             ];
 
-            $newItemIndex = count($cart['items']) - 1;
-
-            $state['cart']                   = $cart;
-            $state['selected_store_id']      = $storeId;
-            $state['last_added_cart_index']  = $newItemIndex;
+            $state['cart'] = $cart;
+            $state['selected_store_id'] = $storeId;
             unset($state['pending_add']);
 
             $this->saveFlowState($phone, $state);
-        } catch (\Throwable $e) {
-            Log::warning('commitAndSendFeedback: cart lock/write failed.', [
-                'phone' => $phone,
-                'error' => $e->getMessage(),
-            ]);
 
+            // --- LÓGICA DE AGRUPAMENTO (DEBOUNCE) ---
+
+            // 3. GERA O NONCE (Marcador de versão para o Job)
+            // Isso é o que o seu SendCartFeedbackJob espera como 2º argumento!
+            $nonce = now()->getTimestampMs();
+            \Illuminate\Support\Facades\Cache::put('zapi:feedback:nonce:' . $phone, $nonce, 60);
+
+            // 4. DESPACHA O JOB COM DELAY
+            // Passamos o telefone e o nonce. O Job só vai enviar a mensagem se o nonce bater.
+            \App\Jobs\Whatsapp\SendCartFeedbackJob::dispatch($phone, $nonce)
+                ->delay(now()->addSeconds(3));
+
+            return true;
+
+        } catch (\Throwable $e) {
+            Log::warning('Erro ao salvar no carrinho: ' . $e->getMessage());
             return false;
         } finally {
             optional($lock)->release();
         }
-
-        // ── Debounce: increment nonce and schedule a delayed feedback ──────
-        $nonceKey = 'zapi:feedback:nonce:'.$phone;
-        $nonce    = (int) Cache::increment($nonceKey);
-        Cache::put($nonceKey, $nonce, now()->addMinutes(5));
-
-        SendCartFeedbackJob::dispatch($phone, $nonce)
-            ->delay(now()->addSeconds(3));
-
-        return true;
     }
 
     /**
@@ -290,7 +403,6 @@ class CartFlow
     {
         $state = $this->flow->getState($phone);
         $cart  = $state['cart'] ?? ['store_id' => null, 'items' => []];
-
         $cartItems = $this->normalizeCartItems($cart['items'] ?? []);
 
         if ($cartItems === []) {
@@ -298,41 +410,29 @@ class CartFlow
         }
 
         $summaryLines = [];
-        $cartTotal    = 0.0;
+        $cartTotal = 0.0;
 
+        // Aqui está o segredo: listamos todos os itens do carrinho atual
         foreach ($cartItems as $item) {
             $itemLabel = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
             $itemUnit  = ($item['base_price'] + $item['additional_price']);
             $itemTotal = $itemUnit * $item['quantity'];
             $cartTotal += $itemTotal;
-            $summaryLines[] = '• '.$item['quantity'].'x *'.$itemLabel.'* — R$ '.number_format($itemTotal, 2, ',', '.');
+            $summaryLines[] = "- {$item['quantity']}x {$itemLabel}";
         }
 
-        $count = count($cartItems);
-        $header = $count === 1
-            ? '✅ *1 item* no carrinho'
-            : "✅ *{$count} itens* no carrinho";
-
-        $message = "{$header}\n"
-            ."——————————————\n"
-            ."🛒 *Seu carrinho:*\n"
-            .implode("\n", $summaryLines)."\n"
-            ."💰 *Total: R\$ ".number_format($cartTotal, 2, ',', '.')."*\n"
-            ."——————————————\n"
-            ."💬 Quer adicionar uma observação no último item?\n"
-            ."_Ex: sem cebola, sem molho, bem passado…_\n"
-            ."_Só digitar agora._\n\n"
-            ."🛍️ Pode continuar escolhendo na lista de produtos acima.";
+        // Montamos a mensagem acumulada
+        $message = "✅ *Itens adicionados:*\n\n"
+            . implode("\n", $summaryLines)
+            . "\n\n🛒 *Total parcial: R$ " . number_format($cartTotal, 2, ',', '.') . "*"
+            . "\n\n*(Dica: você pode continuar escolhendo no cardápio acima.)*";
 
         try {
             $this->zapiClient->sendButtonActions($phone, $message, [
-                ['id' => 'flow_finalize_order', 'label' => '✅ Finalizar pedido'],
+                ['id' => 'flow_finalize_order', 'label' => '🛒 Finalizar Pedido'],
             ]);
         } catch (\Throwable $exception) {
-            Log::warning('sendCartFeedbackNow: failed to send feedback.', [
-                'phone' => $phone,
-                'error' => $exception->getMessage(),
-            ]);
+            Log::warning('Feedback acumulado falhou.', ['error' => $exception->getMessage()]);
         }
     }
 

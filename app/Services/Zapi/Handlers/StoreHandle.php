@@ -177,25 +177,43 @@ class StoreHandle
 
     public function selectStore(string $phone, string $storeSlug): bool
     {
-        $store = Store::query()->where('is_active', true)->where('slug', $storeSlug)->first();
+        // 1. Busca a loja com contagem de categorias para decidir o fluxo
+        $store = Store::query()
+            ->where('is_active', true)
+            ->where('slug', $storeSlug)
+            ->withCount(['categories' => function ($query) {
+                $query->where('is_active', true); // Opcional: filtrar só categorias ativas
+            }])
+            ->first();
+
         if (!$store) {
             return false;
         }
 
+        // 2. Salva a loja selecionada no estado
         $state = $this->flow->getState($phone);
         $state['selected_store_id'] = $store->slug;
         $this->saveFlowState($phone, $state);
 
-        // Chame o novo método para mostrar as categorias
-        return $this->sendCategoriesCarousel($phone, $store->slug);
+        // 🎯 A REGRA DE OURO:
+        // Se a loja tem categorias, mostra o carrossel de categorias.
+        // Se NÃO tem categorias, pula direto para o carrossel geral de produtos da loja.
+        if ($store->categories_count > 0) {
+            return $this->sendCategoriesCarousel($phone, $store->slug);
+        }
+
+        Log::info("Loja {$store->slug} sem categorias. Pulando para produtos.");
+        return $this->sendProductsCarousel($phone, $store->slug, 0);
     }
 
     public function sendCategoriesCarousel(string $phone, string $storeSlug): bool
     {
+        // Carrega a loja com as categorias
         $store = Store::query()->where('slug', $storeSlug)->with('categories')->first();
-        if (!$store || !$store->categories) {
-            // Trate caso não haja categorias
-            return false;
+
+        // Verificação de segurança caso as categorias tenham sumido entre o clique e o processamento
+        if (!$store || $store->categories->isEmpty()) {
+            return $this->sendProductsCarousel($phone, $storeSlug, 0);
         }
 
         $cards = [];
@@ -206,7 +224,7 @@ class StoreHandle
                 'buttons' => [
                     [
                         'id' => 'view_category_'.$category->slug,
-                        'label' => 'Ver produtos',
+                        'label' => '📂 Ver produtos',
                         'type' => 'REPLY',
                     ],
                 ],
@@ -214,7 +232,7 @@ class StoreHandle
         }
 
         try {
-            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria:', $cards);
+            $this->zapiClient->sendCarousel($phone, '🍟 *Escolha uma categoria:*', $cards);
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send category carousel.', ['error' => $exception->getMessage()]);
