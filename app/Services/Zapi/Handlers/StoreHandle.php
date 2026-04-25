@@ -53,22 +53,25 @@ class StoreHandle
         $storeIds = $this->searchStoreIds($query);
 
         if ($storeIds === []) {
-            try {
-                $this->zapiClient->sendText(
-                    $phone,
-                    'Não encontrei lojas para essa busca. Tente outro termo ou digite *filtro*.'
-                );
-                return true;
-            } catch (\Throwable $exception) {
-                Log::warning('Failed to send empty-search response.', ['error' => $exception->getMessage()]);
-                return false;
-            }
+            // 1. Limpa o filtro de busca do usuário no State
+            $state = $this->flow->getState($phone);
+            $state['last_search']   = null;
+            $state['store_results'] = null;
+            $state['store_offset']  = 0;
+            $this->saveFlowState($phone, $state);
+
+            // 2. Define o texto de fallback
+            $mensagemEmpatica = "Poxa, não encontrei nenhuma loja com esse nome por aqui. 😕\n\nMas não passe vontade! Dê uma olhada nessas outras opções incríveis que separei para você: 👇";
+
+            // 3. Manda o carrossel usando o texto acima como título!
+            return $this->sendStoresPage($phone, 0, $mensagemEmpatica);
         }
 
+        // Se encontrou a loja, segue o fluxo normal com o filtro:
         $state = $this->flow->getState($phone);
-        $state['last_search'] = $query;
+        $state['last_search']   = $query;
         $state['store_results'] = $storeIds;
-        $state['store_offset'] = 0;
+        $state['store_offset']  = 0;
         $this->saveFlowState($phone, $state);
 
         return $this->sendStoresPage($phone, 0);
@@ -106,7 +109,7 @@ class StoreHandle
             ->values()
             ->all();
     }
-    public function sendStoresPage(string $phone, int $offset): bool
+    public function sendStoresPage(string $phone, int $offset = 0, ?string $customTitle = null): bool
     {
         $state = $this->flow->getState($phone);
         $storeIds = array_values(array_filter($state['store_results'] ?? []));
@@ -160,9 +163,9 @@ class StoreHandle
 
         $state['store_offset'] = $offset;
         $this->saveFlowState($phone, $state);
-
+        $title = $customTitle ?? '🏪 Confira nossas lojas ativas:';
         try {
-            $this->zapiClient->sendCarousel($phone, '🏪 Confira nossas lojas ativas:', $cards);
+            $this->zapiClient->sendCarousel($phone, $title, $cards);
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send store carousel.', ['error' => $exception->getMessage()]);

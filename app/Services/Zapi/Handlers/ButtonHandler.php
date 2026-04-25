@@ -66,6 +66,38 @@ class ButtonHandler
         }
     }
 
+    public function handleAcceptOrder(string $phone, int $orderId)
+    {
+        $lockKey = "lock:order:{$orderId}";
+
+        // 1. Tenta obter o lock no Redis (expira em 30s por segurança)
+        if (!Redis::set($lockKey, 'locked', 'NX', 'EX', 30)) {
+            return $this->zapiClient->sendText($phone, "❌ Este pedido já foi aceito por outro colega.");
+        }
+
+        try {
+            // 2. Update Atômico no Banco
+            $affected = DB::update("
+            UPDATE orders 
+            SET status = 'delivering', driver_id = ?, accepted_at = NOW() 
+            WHERE id = ? AND status = 'preparToDelivery'
+        ", [$driverId, $orderId]);
+
+            if ($affected === 0) {
+                return $this->zapiClient->sendText($phone, "❌ Tarde demais! Outro entregador foi mais rápido.");
+            }
+
+            // 3. Sucesso! Notifica o vencedor no privado
+            $this->sendOrderDetailsToDriver($phone, $orderId);
+
+            // 4. Edita a mensagem no Grupo para remover os botões
+            $this->editGroupMessageAsAccepted($orderId, $driverName);
+
+        } finally {
+            Redis::del($lockKey); // Libera o lock
+        }
+    }
+
     private function handleFlowButton(string $phone, string $buttonId): bool
     {
         // 1. IDs EXATOS (Switch para performance)

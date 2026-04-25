@@ -6,6 +6,7 @@ use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use App\Enums\OrderStatus;
 
 class Order extends Model
 {
@@ -16,7 +17,7 @@ class Order extends Model
         'user_id',
         'store_id',
         'product_ids',
-        'delivery_id',
+        'courier_id',
         'code',
         'status',
         'payment_status',
@@ -30,6 +31,7 @@ class Order extends Model
         'ordered_at',
         'estimated_ready_at',
         'raw_payload',
+        'group_message_id',
     ];
 
     protected $casts = [
@@ -41,7 +43,16 @@ class Order extends Model
         'ordered_at'         => 'datetime',
         'estimated_ready_at' => 'datetime',
         'raw_payload'        => 'array',
+        'status'             => OrderStatus::class,
     ];
+
+    /**
+     * Retorna true se o pedido estiver no status informado.
+     */
+    public function isStatus(OrderStatus $status): bool
+    {
+        return $this->status === $status;
+    }
 
     // ── Relationships ────────────────────────────────────────────────────────
 
@@ -55,9 +66,10 @@ class Order extends Model
         return $this->belongsTo(User::class);
     }
 
-    public function delivery(): BelongsTo
+
+    public function courier(): BelongsTo
     {
-        return $this->belongsTo(Delivery::class);
+        return $this->belongsTo(Courier::class);
     }
     // ── Accessors ────────────────────────────────────────────────────────────
 

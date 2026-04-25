@@ -10,3 +10,4 @@ Route::post('/webhooks/payment', PaymentWebhookController::class)->name('api.web
 Route::post('/{any?}', ZapiWebhookController::class)
 	->where('any', '.*')
 	->name('api.root');
+

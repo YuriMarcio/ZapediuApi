@@ -4,6 +4,8 @@ namespace App\Providers;
 
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Support\ServiceProvider;
+use App\Models\Order; // <-- IMPORTANTE
+use App\Observers\OrderObserver; // <-- IMPORTANTE
 
 class AppServiceProvider extends ServiceProvider
 {
@@ -20,6 +22,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        //
+        // 👉 O gatilho blindado!
+        Order::observe(OrderObserver::class);
     }
 }

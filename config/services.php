@@ -63,6 +63,7 @@ return [
         'list_description' => env('ZAPI_LIST_DESCRIPTION', 'Clique no botao abaixo para navegar.'),
         'catalog_phone' => env('ZAPI_CATALOG_PHONE'),
         'catalog_translation' => env('ZAPI_CATALOG_TRANSLATION', 'PT'),
+        'drivers_group_jid' => env('ZAPI_DRIVERS_GROUP_JID'),
         'catalog_message' => env('ZAPI_CATALOG_MESSAGE', 'Acesse nosso catalogo no WhatsApp:'),
         'catalog_title' => env('ZAPI_CATALOG_TITLE', 'Catalogo de produtos'),
         'catalog_description' => env('ZAPI_CATALOG_DESCRIPTION', 'Toque para visualizar nossos produtos.'),

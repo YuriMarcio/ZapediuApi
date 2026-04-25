@@ -15,10 +15,12 @@ class TextHandler
         private GreetingFlow $greetingFlow,
         private StoreHandle $storeHandle,
         private ZapiClient $zapiClient
-    ) {}
+    ) {
+    }
 
     public function handle(string $phone, string $messageText): bool
     {
+
         $normalized = $this->flow->normalize($messageText);
         $state = $this->flow->getState($phone);
 
@@ -27,15 +29,22 @@ class TextHandler
             $this->flow->resetState($phone);
             try {
                 $this->zapiClient->sendText($phone, "🗑️ Sessão resetada! Digite *oi* para começar.");
-            } catch (\Throwable) {}
+            } catch (\Throwable) {
+            }
             return true;
         }
 
         // Contexto de checkout
         if (!empty($state['checkout_step'])) {
-            return false; // deixa o fluxo continuar
+            // Repassa a bola para o CheckoutFlow tratar a digitação (e-mail, nome, endereço...)
+            // O CheckoutFlow devolve true ou false, e a gente repassa essa resposta.
+            return $this->checkoutFlow->handleCheckoutTextInput(
+                $phone,
+                $messageText, // O texto original (importante para e-mails e nomes próprios)
+                $normalized,  // O texto em minúsculas (para comandos como 'cancelar')
+                $state['checkout_step']
+            );
         }
-
         // Keywords conhecidas
         return match ($normalized) {
             'carrinho' => $this->handleViewCart($phone),

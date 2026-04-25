@@ -209,32 +209,55 @@ class ZapiWebhookService
      * Lida com o fluxo de comércio: categoria, botões ou texto.
      * Se algum desses fluxos for tratado, retorna true.
      */
+    /**
+      * Lida com o fluxo de comércio: categoria, botões ou texto.
+      * Se algum desses fluxos for tratado, retorna true.
+      */
     private function handleCommerceFlow(array $payload, string $phone): bool
     {
+        // 1. EXTRAI TUDO PRIMEIRO (Evita o erro de variável não definida)
+        $buttonId = strtolower(trim((string) ($this->resolveButtonReplyId($payload) ?? '')));
+        $messageText = $this->resolveIncomingMessageText($payload);
         $selectedCategorySlug = $this->resolveSelectedCategoryId($payload);
-        Log::info('handleCommerceFlow', [
-            'phone' => $phone,
-            'selectedCategorySlug' => $selectedCategorySlug,
-            'buttonId' => $this->resolveButtonReplyId($payload),
-            'messageText' => $this->resolveIncomingMessageText($payload),
-        ]);
 
-        // Se o usuário selecionou uma categoria, envia as lojas dessa categoria
+        // 2. BLOQUEIO DE GRUPO (Evita que o bot fique conversando com texto no grupo)
+        if (str_contains($phone, '-group') || str_contains($phone, '@g.us')) {
+            if ($buttonId === '') {
+                // É só texto no grupo. Ignora e encerra!
+                \Illuminate\Support\Facades\Log::info("Ignorando texto no grupo", ['grupo' => $phone, 'texto' => $messageText ?? 'vazio']);
+                return true;
+            }
+        }
+
+        // 3. FLUXOS DE BOTÃO
+        if ($buttonId !== '') {
+            Log::info('Handling button', ['buttonId' => $buttonId]);
+
+            // 🟢 A NOSSA BARREIRA DO MOTOBOY!
+            // Se for o botão de aceitar entrega, chama nossa trava blindada e encerra
+            if (str_starts_with($buttonId, 'accept_order|')) {
+
+            // 🕵️‍♂️ O ESPIÃO: Vai imprimir o JSON inteiro da Z-API no seu log!
+                \Illuminate\Support\Facades\Log::info("🔍 PAYLOAD Z-API COMPLETO: ", $payload);
+
+                // 👉 A MÁGICA AQUI: Pega o número real de quem clicou no grupo
+                $motoboyPhone = $payload['participantPhone'] ?? $phone;
+
+                $handler = new \App\Services\Whatsapp\AcceptDeliveryHandler();
+                $handler->handle($motoboyPhone, $buttonId, $this->zapiClient);
+                return true;
+            }
+
+            // Se for outro botão qualquer da loja, segue o fluxo normal
+            return $this->handleFlowButton($phone, $buttonId);
+        }
+
+        // 4. FLUXO DE CATEGORIA
         if ($selectedCategorySlug !== null) {
             return $this->sendCategoryStores($phone, $selectedCategorySlug);
         }
 
-        // Se o usuário clicou em um botão, trata o fluxo do botão
-        $buttonId = strtolower(trim((string) ($this->resolveButtonReplyId($payload) ?? '')));
-
-        if ($buttonId !== '') {
-            Log::info('Handling button', ['buttonId' => $buttonId]);
-            return $this->handleFlowButton($phone, $buttonId);
-        }
-
-        // Se o usuário enviou texto, trata o fluxo de texto
-        $messageText = $this->resolveIncomingMessageText($payload);
-
+        // 5. FLUXO DE TEXTO NORMAL
         if ($messageText === null) {
             return false;
         }

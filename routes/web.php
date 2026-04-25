@@ -40,6 +40,9 @@ Route::prefix('public')->as('public.')->group(function (): void {
         ->name('mp.callback');
 
     Route::post('/seller-codes/validate', [OnboardingController::class, 'validateSellerCode'])->name('seller-codes.validate');
+
+    // Rota sendo usada para registrar entregador momentaneamente (etapa 1 - admin valida e cadastra entregador)
+    Route::post('/entregadores', [\App\Http\Controllers\Admin\CourierController::class, 'store']);
     Route::post('/onboarding/stores', [OnboardingController::class, 'store'])->name('onboarding.stores');
     Route::get('/onboarding/metadata', [OnboardingController::class, 'metadata'])->name('onboarding.metadata');
     Route::post('/checkout/pix', [MercadoPagoController::class, 'createPix']);

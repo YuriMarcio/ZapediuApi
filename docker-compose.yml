@@ -17,6 +17,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - delivery-net
 
@@ -53,6 +55,19 @@ services:
     networks:
       - delivery-net
 
+  # 👉 SERVIÇO REDIS ADICIONADO
+  redis:
+    image: redis:alpine
+    container_name: deliveryzapapi-redis
+    restart: unless-stopped
+    networks:
+      - delivery-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   adminer:
     image: adminer:5
     container_name: deliveryzapapi-adminer
@@ -83,6 +98,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_started
     networks:
       - delivery-net
 
