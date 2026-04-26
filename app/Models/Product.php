@@ -46,6 +46,12 @@ class Product extends Model implements HasMedia
         'image_url',
     ];
 
+    public function registerMediaCollections(): void
+    {
+        $this->addMediaCollection('products')
+            ->useDisk('r2'); // ou o disk correto
+    }
+
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);

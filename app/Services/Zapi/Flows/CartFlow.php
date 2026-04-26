@@ -612,7 +612,7 @@ class CartFlow
         $lines[] = '💰 *Total: R$ '.number_format($total, 2, ',', '.').'*';
 
         try {
-            $this->zapiClient->sendButtonActions(
+        $this->zapiClient->sendButtonActions(
                 $phone,
                 implode("\n", $lines),
                 [['id' => 'checkout_pay_now_from_cart', 'label' => '🛒 Finalizar pedido']]

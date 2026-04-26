@@ -80,8 +80,11 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
     Route::get('/stores', [StoreController::class, 'index'])->name('stores.index');
     Route::post('/stores', [StoreController::class, 'store'])->middleware('role:owner,manager')->name('stores.store');
     Route::get('/stores/{store}', [StoreController::class, 'show'])->name('stores.show');
-    Route::match(['put','post'], '/stores/{store}/identity', [StoreController::class, 'updateIdentity'])->middleware('role:owner,manager')->name('stores.identity');
-    Route::put('/stores/{store}/address', [StoreController::class, 'updateAddress'])->middleware('role:owner,manager')->name('stores.address');
+    
+    Route::patch('/stores/{store}/identity', [StoreController::class, 'updateIdentity'])->middleware('role:owner,manager')->name('stores.identity');
+
+    Route::patch('/stores/{store}/address', [StoreController::class, 'updateAddress'])->middleware('role:owner,manager')->name('stores.address');
+
     Route::put('/stores/{store}/hours', [StoreController::class, 'updateHours'])->middleware('role:owner,manager')->name('stores.hours');
 
     // Estoque – Categorias

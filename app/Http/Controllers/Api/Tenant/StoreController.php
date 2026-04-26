@@ -10,14 +10,23 @@ use App\Models\Store;
 use App\Services\Stores\StoreOnboardingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class StoreController extends Controller
 {
-    public function __construct(private readonly StoreOnboardingService $stores) {}
+    public function __construct(private readonly StoreOnboardingService $stores)
+    {
+    }
 
     public function index(Request $request): JsonResponse
     {
-        return response()->json($this->stores->listForUser($request));
+        $stores = $this->stores->listForUser($request);
+        $result = $stores->map(function ($store) {
+            $data = $store->toArray();
+            $data['store_id'] = $store->id;
+            return $data;
+        });
+        return response()->json($result);
     }
 
     public function store(StoreIdentityRequest $request): JsonResponse
@@ -32,9 +41,19 @@ class StoreController extends Controller
         return response()->json($store->load('owner:id,name,email'));
     }
 
-    public function updateIdentity(StoreIdentityRequest $request, Store $store): JsonResponse
+    public function updateIdentity(Request $request, Store $store): JsonResponse
     {
-        $store = $this->stores->updateIdentity($store, $request->validated(), $request);
+        // Usar StoreIdentityRequest para validação e atualizar normalmente
+        // O método espera StoreIdentityRequest, então altere o tipo do parâmetro
+        // e garanta que a request está validando corretamente
+        //
+        // O método correto:
+        // public function updateIdentity(StoreIdentityRequest $request, Store $store): JsonResponse
+        //
+        // Mas para não quebrar a rota, vamos validar manualmente:
+
+        $validated = app(\App\Http\Requests\Api\StoreIdentityRequest::class)->validated();
+        $store = $this->stores->updateIdentity($store, $validated, $request);
 
         return response()->json([
             'id'         => $store->id,
@@ -43,6 +62,8 @@ class StoreController extends Controller
             'slug'       => $store->slug,
             'logo_path'  => $store->logo_path,
             'logo_url'   => $store->logo_url,
+            'cover_image_path' => $store->cover_image_path,
+            'cover_image_url'  => $store->cover_image_url,
         ]);
     }
 

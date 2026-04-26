@@ -5,6 +5,7 @@ namespace App\Models;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 class Company extends Model
 {
@@ -29,11 +30,6 @@ class Company extends Model
         'settings',
         'is_active',
     ];
-
-        public function wallet(): HasOne
-    {
-        return $this->hasOne(\App\Models\Wallet::class);
-    }
 
     protected $casts = [
         'shipping_rules' => 'array',
@@ -60,6 +56,11 @@ class Company extends Model
     public function orders(): HasMany
     {
         return $this->hasMany(Order::class);
+    }
+
+    public function wallet(): HasOne
+    {
+        return $this->hasOne(Wallet::class);
     }
 
     public function plan(): BelongsTo

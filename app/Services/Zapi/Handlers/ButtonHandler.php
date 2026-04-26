@@ -52,7 +52,7 @@ class ButtonHandler
             if ($result) {
                 return true;
             }
-
+            Log::info("Button ID {$buttonId} não mapeado como fluxo, tentando intent genérica...");
             return $this->handleCommerceReplyIntent($phone, $buttonId);
         } catch (\Throwable $e) {
             // Se der erro, removemos a trava para o usuário poder tentar de novo

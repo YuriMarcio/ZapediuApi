@@ -73,7 +73,10 @@ class StockService
             $product = Product::query()->create($data);
 
             if ($image !== null) {
-                $product->addMedia($image)->toMediaCollection('products');
+                $media = $product->addMedia($image)->toMediaCollection('products');
+                // Preenche o campo image_path com a URL da imagem principal
+                $product->image_path = $media->getFullUrl();
+                $product->save();
             }
 
             $this->syncVariations($product, $variations);
@@ -108,7 +111,10 @@ class StockService
 
             if ($image !== null) {
                 $product->clearMediaCollection('products');
-                $product->addMedia($image)->toMediaCollection('products');
+                $media = $product->addMedia($image)->toMediaCollection('products');
+                // Atualiza o campo image_path com a nova URL da imagem
+                $product->image_path = $media->getFullUrl();
+                $product->save();
             }
 
             $this->syncVariations($product, $variations);

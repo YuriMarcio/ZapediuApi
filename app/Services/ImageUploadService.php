@@ -25,7 +25,7 @@ class ImageUploadService
         $path = $folder.'/'.Str::uuid().'.webp';
         Storage::disk('r2')->put($path, $webp, 'public');
 
-        return Storage::disk('r2')->url($path);
+        return $path;
     }
 
     /**

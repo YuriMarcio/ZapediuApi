@@ -34,7 +34,7 @@ return [
             'channel' => env('SLACK_BOT_USER_DEFAULT_CHANNEL'),
         ],
     ],
-    
+
     'mercadopago' => [
         'client_id' => env('MP_CLIENT_ID'),
         'client_secret' => env('MP_CLIENT_SECRET'),
@@ -44,6 +44,10 @@ return [
     'admin' => [
         'api_token' => env('ADMIN_API_TOKEN', ''),
     ],
+
+    'google' => [
+    'maps_key' => env('GOOGLE_MAPS_API_KEY'),
+],
 
     'zapi' => [
         'base_url' => env('ZAPI_BASE_URL', 'https://api.z-api.io'),

@@ -10,6 +10,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 use App\Models\Category;
+use App\Services\GeocodeService;
+use Illuminate\Support\Facades\Log;
 
 /**
  * @property string $slug
@@ -28,13 +30,14 @@ class Store extends Model implements HasMedia
         'name',
         'legal_name',
         'slug',
+        'full_address',
         'segment',
         'category_id',
         'whatsapp_phone',
         'phone',
         'cnpj',
-        'logo_path',
-        'cover_image_path',
+        'logo_url',
+        'cover_image_url',
         'description',
         'zip_code',
         'street',
@@ -46,6 +49,8 @@ class Store extends Model implements HasMedia
         'is_active',
         'timezone',
         'settings',
+        'latitude',
+        'longitude',
         'business_hours',
     ];
 
@@ -54,13 +59,6 @@ class Store extends Model implements HasMedia
         'settings' => 'array',
         'business_hours' => 'array',
     ];
-
-    protected $appends = [
-        'logo_url',
-        'cover_image_url',
-        'full_address',
-    ];
-
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
@@ -70,6 +68,25 @@ class Store extends Model implements HasMedia
     {
         // Isso assume que sua tabela 'categories' tem uma 'store_id'
         return $this->hasMany(Category::class);
+    }
+
+    protected static function booted(): void
+    {
+        static::saving(function (Store $store) {
+            // Se a loja for nova ou mudar de endereço...
+            if ($store->isDirty(['street', 'number', 'neighborhood', 'city', 'state'])) {
+
+                // Usa o seu accessor ou junta as variáveis
+                $fullText = "{$store->street}, {$store->number}, {$store->neighborhood}, {$store->city}, {$store->state}";
+
+                $coords = GeocodeService::getCoordinates($fullText);
+
+                if ($coords) {
+                    $store->latitude = $coords['latitude'];
+                    $store->longitude = $coords['longitude'];
+                }
+            }
+        });
     }
 
     public function products(): HasMany
@@ -87,55 +104,6 @@ class Store extends Model implements HasMedia
         return $this->hasMany(Order::class);
     }
 
-    protected function logoUrl(): Attribute
-    {
-        return Attribute::get(fn (): ?string => $this->absoluteMediaUrl('logo_path', 'logo'));
-    }
-
-    protected function coverImageUrl(): Attribute
-    {
-        return Attribute::get(fn (): ?string => $this->absoluteMediaUrl('cover_image_path', 'cover'));
-    }
-
-    protected function fullAddress(): Attribute
-    {
-        return Attribute::get(function (): ?string {
-            $parts = array_filter([
-                $this->street,
-                $this->number,
-                $this->complement,
-                $this->neighborhood,
-                $this->city,
-                $this->state,
-                $this->zip_code,
-            ], fn (?string $value): bool => $value !== null && $value !== '');
-
-            if ($parts === []) {
-                return null;
-            }
-
-            return implode(', ', $parts);
-        });
-    }
-
-    private function absoluteMediaUrl(string $column, string $collection): ?string
-    {
-        $fromMedia = $this->getFirstMediaUrl($collection);
-
-        if ($fromMedia !== '') {
-            return str_starts_with($fromMedia, 'http') ? $fromMedia : url($fromMedia);
-        }
-
-        $path = (string) ($this->{$column} ?? '');
-
-        if ($path === '') {
-            return null;
-        }
-
-        if (str_starts_with($path, 'http://') || str_starts_with($path, 'https://')) {
-            return $path;
-        }
-
-        return url('/storage/'.ltrim($path, '/'));
-    }
+    // Os campos logo_url, cover_image_url e full_address agora são persistidos diretamente no banco.
+    // Se quiser lógica extra, crie accessors ou mutators conforme necessário.
 }

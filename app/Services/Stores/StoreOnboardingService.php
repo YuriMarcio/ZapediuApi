@@ -13,7 +13,8 @@ class StoreOnboardingService
     public function __construct(
         private readonly AuditLogger $auditLogger,
         private readonly ImageUploadService $imageUploader,
-    ) {}
+    ) {
+    }
 
     public function listForUser(Request $request)
     {
@@ -31,6 +32,20 @@ class StoreOnboardingService
         $payload['slug'] = $this->uniqueSlug((string) $data['name']);
         $payload['is_active'] = true;
 
+        // Logo
+        $logo = $request->file('logo');
+        if ($logo !== null) {
+            $path = $this->imageUploader->upload($logo, 'logos', 600, 80);
+            $payload['logo_url'] = \Storage::disk('r2')->url($path);
+        }
+
+        // Banner/Cover
+        $cover = $request->file('cover');
+        if ($cover !== null) {
+            $path = $this->imageUploader->upload($cover, 'covers', 1200, 400);
+            $payload['cover_image_url'] = \Storage::disk('r2')->url($path);
+        }
+
         $store = Store::query()->create($payload);
 
         $this->auditLogger->log('store.created', [
@@ -42,36 +57,34 @@ class StoreOnboardingService
         return $store->refresh();
     }
 
-    public function updateIdentity(Store $store, array $data, Request $request): Store
+    public function updateIdentity(Store $store, array $data, $request)
     {
-        $logo = $request->file('logo');
+        // Upload do Logo para o R2
+        if ($request->hasFile('logo')) {
+            // Se já existir um antigo, deleta do R2 para não acumular lixo
+            if ($store->logo_url) {
+                // Não é possível deletar por URL, mas se quiser pode implementar lógica extra
+            }
 
-        \Illuminate\Support\Facades\Log::info('updateIdentity called', [
-            'store_id'   => $store->id,
-            'has_logo'   => $logo !== null,
-            'data_keys'  => array_keys($data),
-            'all_files'  => array_keys($request->allFiles()),
-        ]);
+            // Salva no R2 dentro da pasta 'logos'
+            $path = $request->file('logo')->store('logos', 'r2');
+            $store->logo_url = \Storage::disk('r2')->url($path);
+        }
 
-        if ($logo !== null) {
-            $data['logo_path'] = $this->imageUploader->upload($logo, 'logos', 600, 80);
+        // Upload da Capa para o R2
+        if ($request->hasFile('cover_image')) {
+            if ($store->cover_image_url) {
+                // Não é possível deletar por URL, mas se quiser pode implementar lógica extra
+            }
+
+            $path = $request->file('cover_image')->store('covers', 'r2');
+            $store->cover_image_url = \Storage::disk('r2')->url($path);
         }
 
         $store->fill($data);
-
-        if (isset($data['name']) && $data['name'] !== $store->getOriginal('name')) {
-            $store->slug = $this->uniqueSlug((string) $data['name'], $store->id);
-        }
-
         $store->save();
 
-        $this->auditLogger->log('store.identity.updated', [
-            'entity_type' => Store::class,
-            'entity_id' => $store->id,
-            'changes' => $data,
-        ], $request);
-
-        return $store->refresh();
+        return $store;
     }
 
     public function updateAddress(Store $store, array $data, Request $request): Store

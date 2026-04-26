@@ -57,8 +57,60 @@ class CheckoutFlow
 
     private function buildStoreDeliveryFee(Store $store): float
     {
-        // Stub: Em produção, isso viria de StoreHandle ou da Model Store
-        return (float) ($store->delivery_fee ?? 0.0);
+        $state = $this->flow->getState($this->currentPhone ?? '');
+        $customer = $state['customer_coords'] ?? null; // Lat/Lng que o Google salvou
+
+        if (!$customer) {
+            return 9.0;
+        }
+
+        // Verifica se a loja e o cliente estão dentro da sua área cinza da imagem
+        $lojaDentro = $this->isInsideGaleaoPolygon($store->latitude, $store->longitude);
+        $clienteDentro = $this->isInsideGaleaoPolygon($customer['lat'], $customer['lng']);
+
+        if ($lojaDentro && $clienteDentro) {
+            return 8.0;
+        }
+
+        return 9.0;
+    }
+
+    private function isInsideGaleaoPolygon($lat, $lng): bool
+    {
+        // Coordenadas dos pontos que você marcou no mapa (exemplo aproximado)
+        // Você deve pegar as coordenadas reais de cada ponto do seu desenho
+        $polygon = [
+            ['lat' => -22.805, 'lng' => -43.235], // Ponto superior esquerdo
+            ['lat' => -22.800, 'lng' => -43.220], // Ponto superior direito
+            ['lat' => -22.815, 'lng' => -43.210], // Ponto inferior direito
+            ['lat' => -22.825, 'lng' => -43.225], // Ponto inferior esquerdo
+            // ... adicione todos os pontos do contorno da imagem
+        ];
+
+        $vertices_count = count($polygon);
+        $inside = false;
+
+        for ($i = 0, $j = $vertices_count - 1; $i < $vertices_count; $j = $i++) {
+            if (((($polygon[$i]['lat'] > $lat) != ($polygon[$j]['lat'] > $lat))) &&
+                ($lng < ($polygon[$j]['lng'] - $polygon[$i]['lng']) * ($lat - $polygon[$i]['lat']) /
+                ($polygon[$j]['lat'] - $polygon[$i]['lat']) + $polygon[$i]['lng'])) {
+                $inside = !$inside;
+            }
+        }
+
+        return $inside;
+    }
+
+    private function haversine($lat1, $lon1, $lat2, $lon2)
+    {
+        $earthRadius = 6371; // Raio da Terra em KM
+        $dLat = deg2rad($lat2 - $lat1);
+        $dLon = deg2rad($lon2 - $lon1);
+        $a = sin($dLat / 2) * sin($dLat / 2) +
+             cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
+             sin($dLon / 2) * sin($dLon / 2);
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+        return $earthRadius * $c;
     }
 
     public function finalizeCart(string $phone): bool
@@ -83,6 +135,8 @@ class CheckoutFlow
             ->with(['primaryAddress'])
             ->first();
 
+        Log::info('User lookup for checkout', ['phone' => $normalizedPhone, 'user_found' => $user !== null]);
+
         if ($user !== null) {
             $customer = (array) ($state['customer'] ?? []);
             $customer['name'] = $customer['name'] ?? $user->name;
@@ -97,6 +151,8 @@ class CheckoutFlow
             $state['customer'] = $customer;
             $this->saveFlowState($phone, $state);
 
+            Log::info('User found for checkout, sending address confirmation', ['phone' => $normalizedPhone, 'customer' => $customer]);
+
             return !empty($customer['address'])
                 ? $this->sendAddressConfirmation($phone, $customer)
                 : $this->startCheckoutDataCollection($phone);
@@ -108,12 +164,13 @@ class CheckoutFlow
     public function sendAddressConfirmation(string $phone, array $customer): bool
     {
         // ❌ Remova qualquer coisa parecida com: "👋 Olá, " . $customer['name'] . "!"
-
+        Log::info('Sending address confirmation to '.$phone.' for customer: '.json_encode($customer));
         // ✅ Deixe a mensagem direto ao ponto:
+        $reference = $customer['reference'] ?? '';
         $message = "📍 *Entrega será em:*\n" .
-                   "{$customer['address']}\n" .
-                   ($customer['reference'] ? "📌 *Referência:* {$customer['reference']}\n\n" : "\n") .
-                   "Está correto?";
+               "{$customer['address']}\n" .
+               ($reference ? "📌 *Referência:* $reference\n\n" : "\n") .
+               "Está correto?";
 
         try {
             // Remova a palavra "return" daqui
@@ -196,40 +253,28 @@ class CheckoutFlow
             return null;
         }
 
-        $query = User::query();
+        // Geramos o e-mail fallback caso ele venha vazio
+        $emailToUse = $customerEmail !== ''
+            ? $customerEmail
+            : 'cliente-'.($customerPhone !== '' ? $customerPhone : Str::lower(Str::slug($orderCode))).'@deliveryzap.local';
 
-        if ($companyId !== null) {
-            $query->where('company_id', $companyId);
-        }
-
-        $query->where(function ($inner) use ($customerPhone, $customerEmail): void {
-            if ($customerPhone !== '') {
-                $inner->orWhere('phone', $customerPhone);
-            }
-
-            if ($customerEmail !== '') {
-                $inner->orWhere('email', $customerEmail);
-            }
-        });
-
-        $user = $query->first();
-
-        if ($user !== null) {
-            return $user;
-        }
-
-        return User::query()->create([
-            'company_id' => $companyId,
-            'name' => $customerName !== '' ? $customerName : 'Cliente '.($customerPhone !== '' ? $customerPhone : $orderCode),
-            'email' => $customerEmail !== '' ? $customerEmail : 'cliente-'.($customerPhone !== '' ? $customerPhone : Str::lower(Str::slug($orderCode))).'@deliveryzap.local',
-            'phone' => $customerPhone !== '' ? $customerPhone : null,
-            'password' => Str::random(32),
-            'is_admin' => false,
-            'role' => 'customer',
-        ]);
+        // O segredo está aqui: o updateOrCreate lida com a concorrência
+        return User::updateOrCreate(
+            [
+                'company_id' => $companyId,
+                'email'      => $emailToUse, // Chave única que estava dando erro
+            ],
+            [
+                'name'     => $customerName !== '' ? $customerName : 'Cliente '.($customerPhone !== '' ? $customerPhone : $orderCode),
+                'phone'    => $customerPhone !== '' ? $customerPhone : null,
+                'password' => Str::random(32),
+                'is_admin' => false,
+                'role'     => 'customer',
+            ]
+        );
     }
 
-    private function handleCheckoutTextInput(string $phone, string $rawText, string $normalizedText, string $checkoutStep): bool
+    public function handleCheckoutTextInput(string $phone, string $rawText, string $normalizedText, string $checkoutStep): bool
     {
         $state = $this->flow->getState($phone);
 
@@ -241,14 +286,14 @@ class CheckoutFlow
             return $this->sendWelcomePrompt($phone);
         }
 
+
         switch ($checkoutStep) {
             case 'verify_email_lookup':
                 $email = strtolower(trim($rawText));
 
-                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
                     try {
                         $this->zapiClient->sendText($phone, '⚠️ E-mail inválido. Digite um e-mail válido para continuar.');
-
                         return true;
                     } catch (\Throwable) {
                         return false;
@@ -258,8 +303,8 @@ class CheckoutFlow
                 $normalizedPhone = $this->normalizePhoneForLookup($phone);
                 $existingUser = User::query()->where('email', $email)->first();
 
-                // Existing email: require code verification.
                 if ($existingUser !== null) {
+                    // Usuário existe: segue fluxo de verificação de código
                     $code = (string) random_int(100000, 999999);
                     $state['customer']['email'] = $email;
                     $state['email_verification'] = [
@@ -278,14 +323,13 @@ class CheckoutFlow
                             $phone,
                             '🔐 Enviamos um código de 6 dígitos para seu e-mail. Digite o código aqui no WhatsApp para confirmar.'
                         );
-
                         return true;
                     } catch (\Throwable) {
                         return false;
                     }
                 }
 
-                // New email: proceed without code and create minimal account.
+                // Usuário não existe: segue fluxo de cadastro, NÃO volta ao início
                 $fallbackName = trim(Str::before($email, '@'));
                 if ($fallbackName === '') {
                     $fallbackName = 'Cliente WhatsApp';
@@ -317,6 +361,7 @@ class CheckoutFlow
                 } catch (\Throwable) {
                 }
 
+                // Não volta ao início, segue para coleta de dados
                 return $this->startCheckoutDataCollection($phone);
 
             case 'verify_email_code':
@@ -488,11 +533,6 @@ class CheckoutFlow
         return false;
     }
 
-
-
-
-
-
     private function sendDataConfirmation(string $phone): bool
     {
         $state    = $this->flow->getState($phone);
@@ -553,6 +593,36 @@ class CheckoutFlow
         if ($store === null) {
             return false;
         }
+
+        // Patch: Sempre usar e persistir user_id
+        $customerUser = null;
+        if (!empty($customer['user_id'])) {
+            $customerUser = User::find($customer['user_id']);
+        }
+        if (!$customerUser) {
+            $normalizedPhone = (string) ($customer['phone'] ?? '');
+            $email = (string) ($customer['email'] ?? '');
+            $customerUser = User::where('phone', $normalizedPhone)
+                                ->orWhere('email', $email)
+                                ->first();
+            if (!$customerUser) {
+                $customerUser = $this->resolveCustomerUser(
+                    $store?->company_id,
+                    (string) ($customer['name'] ?? ''),
+                    $normalizedPhone,
+                    $email,
+                    'checkout-preview'
+                );
+            }
+            // Salva o user_id no estado para travar futuras execuções
+            $state['customer']['user_id'] = $customerUser?->id;
+            $this->saveFlowState($phone, $state);
+        }
+        $this->syncUserAddress(
+            $customerUser,
+            (string) ($customer['address'] ?? ''),
+            (string) ($customer['reference'] ?? '')
+        );
 
         $items = $this->normalizeCartItems($cart['items'] ?? []);
         $subtotal = 0.0;
@@ -666,7 +736,6 @@ class CheckoutFlow
         if ($storeId === '' || empty($cart['items'])) {
             try {
                 $this->zapiClient->sendText($phone, '🛒 Seu carrinho está vazio. Adicione produtos para finalizar.');
-
                 return true;
             } catch (\Throwable) {
                 return false;
@@ -676,25 +745,33 @@ class CheckoutFlow
         $store = Store::query()->where('slug', $storeId)->first();
         $items = $this->normalizeCartItems($cart['items']);
         $subtotal = 0.0;
-
         foreach ($items as $item) {
             $subtotal += ($item['base_price'] + $item['additional_price']) * $item['quantity'];
         }
-
         $deliveryFee = $store instanceof Store ? $this->buildStoreDeliveryFee($store) : 0.0;
         $total = $subtotal + $deliveryFee;
 
         // Generate readable order code
         $orderCode = 'ZAP-'.date('ymd').'-'.strtoupper(Str::random(4));
 
-        // Persist Order
-        $customerUser = $this->resolveCustomerUser(
-            $store?->company_id,
-            (string) ($customer['name'] ?? ''),
-            $this->normalizePhoneForLookup($phone),
-            (string) ($customer['email'] ?? ''),
-            $orderCode,
-        );
+        // Patch: Always use user_id from state if present
+        $customerUser = null;
+        if (!empty($customer['user_id'])) {
+            $customerUser = \App\Models\User::find($customer['user_id']);
+        }
+        if (!$customerUser) {
+            // Fallback: resolve or create user
+            $customerUser = $this->resolveCustomerUser(
+                $store?->company_id,
+                (string) ($customer['name'] ?? ''),
+                $this->normalizePhoneForLookup($phone),
+                (string) ($customer['email'] ?? ''),
+                $orderCode,
+            );
+            // Save user_id in state for future steps
+            $state['customer']['user_id'] = $customerUser?->id;
+            $this->saveFlowState($phone, $state);
+        }
 
         Log::info('testando se passa aqui ');
 

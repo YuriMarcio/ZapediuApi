@@ -67,6 +67,8 @@ class StoreHandle
             return $this->sendStoresPage($phone, 0, $mensagemEmpatica);
         }
 
+        Log::info('Search found stores', ['query' => $query, 'storeIds' => $storeIds]);
+
         // Se encontrou a loja, segue o fluxo normal com o filtro:
         $state = $this->flow->getState($phone);
         $state['last_search']   = $query;
@@ -141,7 +143,7 @@ class StoreHandle
 
             $cards[] = [
                 'text' => $this->formatStoreCardText($store),
-                'image' => $store->cover_image_path ?? $store->logo_path ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
+                'image' => $store->cover_image_url ?? $store->logo_url ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
                 'buttons' => [
                     [
                         'id' => 'view_menu_'.$store->slug,
