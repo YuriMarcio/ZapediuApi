@@ -106,6 +106,7 @@ class StoreHandle
 
         return $storesQuery
             ->orderBy('name')
+            ->distinct()
             ->pluck('slug')
             ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
             ->values()
@@ -174,7 +175,7 @@ class StoreHandle
             return false;
         }
     }
-
+//apagar 
     private function buildStoreDeliveryFee(Store $store): float
     {
         return 8.00;

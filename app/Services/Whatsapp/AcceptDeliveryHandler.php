@@ -31,27 +31,53 @@ class AcceptDeliveryHandler
             return;
         }
 
-        $affectedRows = DB::table('orders')
-            ->where('id', $orderId)
-            ->where('status', 'preparToDelivery')
-            ->update([
-                'status' => 'delivering',
-                'updated_at' => now(),
-            ]);
+        $driver = \App\Models\Courier::where('phone', $driverPhone)->first();
 
-        if ($affectedRows === 0) {
-            $zapi->sendText($driverPhone, "❌ Tarde demais! Essa corrida já foi assumida por outro entregador.");
-            return;
+        Log::info("Driver lookup for phone {$driverPhone}: " . ($driver ? "Found ID {$driver->id}" : "Not found"));
+
+        $driverId = $driver && $driver->is_active ? $driver->id : null;
+
+        try {
+            // 2. A MÁGICA DA CONCORRÊNCIA (A corrida maluca)
+            $affectedRows = DB::table('orders')
+                ->where('id', $orderId)
+                ->where('status', 'preparToDelivery') // Busca pedido que ESTÁ esperando
+                ->whereNull('courier_id')            // Garante que NINGUÉM pegou ainda
+                ->update([
+                    'status'      => 'delivering',    // Muda pra "A caminho"
+                    'courier_id' => $driverId,       // O motoboy carimba o nome dele na entrega!
+                    'updated_at'  => now(),
+                ]);
+
+            if ($affectedRows === 0) {
+                $zapi->sendText($driverPhone, "❌ Tarde demais! Essa corrida já foi assumida por outro entregador.");
+                return;
+            }
+        } catch (\Illuminate\Database\QueryException $e) {
+            if ($e->getCode() == 23000) {
+                // Mensagem amigável no grupo
+                $order = Order::find($orderId);
+                $groupJid = config('services.zapi.drivers_group_jid');
+                $msg = '❌ Não foi possível aceitar o pedido. Ele ainda está disponível para outro entregador.';
+                if ($groupJid) {
+                    $zapi->sendText($groupJid, $msg);
+                } else {
+                    $zapi->sendText($driverPhone, $msg);
+                }
+                Log::warning('Erro de integridade ao aceitar pedido: ' . $e->getMessage());
+                return;
+            }
+            throw $e;
         }
 
         $order = Order::find($orderId);
         $groupJid = config('services.zapi.drivers_group_jid');
 
-        $payload = is_string($this->order->raw_payload)
-            ? json_decode($this->order->raw_payload, true)
-            : $this->order->raw_payload;
+        $payload = is_string($order->raw_payload)
+            ? json_decode($order->raw_payload, true)
+            : $order->raw_payload;
 
-        $store = $this->order->store;
+        $store = $order->store;
         $storeName = $store->name ?? 'Loja Parceira';
 
         // 👉 CORREÇÃO: Usando o seu accessor full_address!

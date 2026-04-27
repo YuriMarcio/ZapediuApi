@@ -11,7 +11,7 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-
+use App\Services\Zapi\Flows\CheckoutFlow;
 class BroadcastOrderToDriversJob implements ShouldQueue
 {
     use Dispatchable;
@@ -107,7 +107,8 @@ class BroadcastOrderToDriversJob implements ShouldQueue
         if ($tempoEntrega !== '') {
             $lines[] = "⏱️ {$tempoEntrega}";
         }
-        $lines[] = "💰 *Taxa:* *R$ " . number_format((float)$this->order->delivery_fee, 2, ',', '.') . '*';
+        // $this->CheckoutFlow não existe, usar a variável local $checkoutFlow
+        $lines[] = "💰 *Taxa:* *R$ " . number_format((float)($deliveryFee ?? 0), 2, ',', '.') . '*';
         $lines[] = '';
         $lines[] = "💳 *Pagamento:*({$status})";
         $lines[] = "📦 *Volume:* {$itemsCount} itens";

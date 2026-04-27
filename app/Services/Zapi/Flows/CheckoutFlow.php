@@ -57,22 +57,31 @@ class CheckoutFlow
 
     private function buildStoreDeliveryFee(Store $store): float
     {
+        Log::info('Calculating delivery fee for store '.$store->id);
+
         $state = $this->flow->getState($this->currentPhone ?? '');
         $customer = $state['customer_coords'] ?? null; // Lat/Lng que o Google salvou
 
         if (!$customer) {
-            return 9.0;
+            return 8.0;
         }
 
         // Verifica se a loja e o cliente estão dentro da sua área cinza da imagem
         $lojaDentro = $this->isInsideGaleaoPolygon($store->latitude, $store->longitude);
         $clienteDentro = $this->isInsideGaleaoPolygon($customer['lat'], $customer['lng']);
 
+        Log::info('buildStoreDeliveryFee', [
+            'store' => [$store->latitude, $store->longitude],
+            'customer_coords' => $customer,
+            'lojaDentro' => $lojaDentro ?? null,
+            'clienteDentro' => $clienteDentro ?? null,
+        ]);
+
         if ($lojaDentro && $clienteDentro) {
             return 8.0;
         }
 
-        return 9.0;
+        return 8.0;
     }
 
     private function isInsideGaleaoPolygon($lat, $lng): bool
@@ -468,9 +477,27 @@ class CheckoutFlow
                     return false;
                 }
 
+
             case 'collect_address':
             case 'change_address':
                 $state['customer']['address'] = trim($rawText);
+
+                // Tenta geocodificar o endereço
+                try {
+                    $coords = \App\Services\GeocodeService::getCoordinates($state['customer']['address']);
+                    if ($coords && isset($coords['latitude'], $coords['longitude'])) {
+                        $state['customer_coords'] = [
+                            'lat' => $coords['latitude'],
+                            'lng' => $coords['longitude'],
+                            'formatted' => $coords['formatted'] ?? $state['customer']['address'],
+                        ];
+                    } else {
+                        unset($state['customer_coords']); // Remove se não conseguiu
+                    }
+                } catch (\Throwable $e) {
+                    unset($state['customer_coords']);
+                }
+
                 $state['checkout_step'] = $checkoutStep === 'change_address' ? '' : 'collect_reference';
                 $this->saveFlowState($phone, $state);
 
@@ -479,7 +506,6 @@ class CheckoutFlow
                         $this->zapiClient->sendText($phone, '✅ Endereço atualizado!');
                     } catch (\Throwable) {
                     }
-
                     return $this->sendOrderSummary($phone);
                 }
 
@@ -489,7 +515,6 @@ class CheckoutFlow
                         "📍 Tem alguma referência para ajudar na entrega?\n_Ex: Próximo ao mercado, portão azul_",
                         [['id' => 'checkout_skip_reference', 'label' => 'Pular']]
                     );
-
                     return true;
                 } catch (\Throwable) {
                     return false;

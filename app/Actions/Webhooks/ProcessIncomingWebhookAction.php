@@ -90,6 +90,12 @@ class ProcessIncomingWebhookAction
         }
 
         $orderCode = (string) ($orderData['code'] ?? '');
+        if ($orderCode === '') {
+            // Gera código aleatório de 5 caracteres (letras e números)
+            do {
+                $orderCode = strtoupper(Str::random(5));
+            } while (Order::query()->where('code', $orderCode)->exists());
+        }
         $externalId = (string) ($orderData['id'] ?? '');
 
         if ($externalId !== '') {

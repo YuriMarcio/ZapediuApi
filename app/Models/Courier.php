@@ -11,7 +11,6 @@ class Courier extends Model
     use HasFactory;
 
     protected $fillable = [
-        'company_id',
         'first_name',
         'last_name',
         'full_name',
