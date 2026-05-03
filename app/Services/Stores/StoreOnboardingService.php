@@ -4,14 +4,12 @@ namespace App\Services\Stores;
 
 use App\Models\Store;
 use App\Services\ImageUploadService;
-use App\Support\Audit\AuditLogger;
 use Illuminate\Http\Request;
 use Illuminate\Support\Str;
 
 class StoreOnboardingService
 {
     public function __construct(
-        private readonly AuditLogger $auditLogger,
         private readonly ImageUploadService $imageUploader,
     ) {
     }
@@ -48,11 +46,6 @@ class StoreOnboardingService
 
         $store = Store::query()->create($payload);
 
-        $this->auditLogger->log('store.created', [
-            'entity_type' => Store::class,
-            'entity_id' => $store->id,
-            'changes' => $store->toArray(),
-        ], $request);
 
         return $store->refresh();
     }
@@ -90,13 +83,6 @@ class StoreOnboardingService
     public function updateAddress(Store $store, array $data, Request $request): Store
     {
         $store->fill($data)->save();
-
-        $this->auditLogger->log('store.address.updated', [
-            'entity_type' => Store::class,
-            'entity_id' => $store->id,
-            'changes' => $data,
-        ], $request);
-
         return $store->refresh();
     }
 
@@ -104,12 +90,6 @@ class StoreOnboardingService
     {
         $store->business_hours = $hours['business_hours'];
         $store->save();
-
-        $this->auditLogger->log('store.hours.updated', [
-            'entity_type' => Store::class,
-            'entity_id' => $store->id,
-            'changes' => $hours,
-        ], $request);
 
         return $store->refresh();
     }

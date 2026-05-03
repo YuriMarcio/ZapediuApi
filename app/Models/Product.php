@@ -42,8 +42,12 @@ class Product extends Model implements HasMedia
         'has_variations' => 'boolean',
     ];
 
+    protected $hidden = [
+        'image_url', // Hide from serialization to prevent infinite recursion
+    ];
+
     protected $appends = [
-        'image_url',
+        // 'image_url', // Temporarily removed to debug infinite recursion
     ];
 
     public function registerMediaCollections(): void
@@ -85,25 +89,30 @@ class Product extends Model implements HasMedia
     protected function imageUrl(): Attribute
     {
         return Attribute::get(function (): ?string {
-            $whatsapp = $this->getFirstMediaUrl('products', 'whatsapp');
-            if ($whatsapp !== '') {
-                return $whatsapp;
-            }
-
-            $fromMedia = $this->getFirstMediaUrl('products');
-            if ($fromMedia !== '') {
-                return str_starts_with($fromMedia, 'http') ? $fromMedia : url($fromMedia);
-            }
-
-            if ($this->image_path === null || $this->image_path === '') {
-                return null;
-            }
-
-            if (str_starts_with($this->image_path, 'http://') || str_starts_with($this->image_path, 'https://')) {
-                return $this->image_path;
-            }
-
-            return url('/storage/'.ltrim($this->image_path, '/'));
+            // Temporarily return null to avoid infinite recursion
+            // The real implementation will be restored after fixing the media library issue
+            return null;
+            
+            // Original implementation (commented out):
+            // $whatsapp = $this->getFirstMediaUrl('products', 'whatsapp');
+            // if ($whatsapp !== '') {
+            //     return $whatsapp;
+            // }
+            //
+            // $fromMedia = $this->getFirstMediaUrl('products');
+            // if ($fromMedia !== '') {
+            //     return str_starts_with($fromMedia, 'http') ? $fromMedia : url($fromMedia);
+            // }
+            //
+            // if ($this->image_path === null || $this->image_path === '') {
+            //     return null;
+            // }
+            //
+            // if (str_starts_with($this->image_path, 'http://') || str_starts_with($this->image_path, 'https://')) {
+            //     return $this->image_path;
+            // }
+            //
+            // return url('/storage/'.ltrim($this->image_path, '/'));
         });
     }
 

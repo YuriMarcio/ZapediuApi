@@ -26,6 +26,10 @@ class SelectionGroup extends Model
         'is_active' => 'boolean',
     ];
 
+    protected $hidden = [
+        'products',
+    ];
+
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);

@@ -16,4 +16,9 @@ class ProductPathGenerator implements PathGenerator
     {
         return $this->getPath($media) . 'conversions/';
     }
+
+    public function getPathForResponsiveImages(Media $media): string
+    {
+        return $this->getPath($media) . 'responsive-images/';
+    }
 }

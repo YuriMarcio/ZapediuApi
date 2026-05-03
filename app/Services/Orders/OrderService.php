@@ -6,7 +6,6 @@ use App\Domain\Orders\OrderStateMachine;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Whatsapp\WhatsAppOrchestrator;
-use App\Support\Audit\AuditLogger;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Http\Request;
@@ -31,7 +30,6 @@ class OrderService
     public function __construct(
         private readonly OrderStateMachine $stateMachine,
         private readonly WhatsAppOrchestrator $orchestrator,
-        private readonly AuditLogger $auditLogger,
     ) {}
 
     // ── Queries ──────────────────────────────────────────────────────────────
@@ -166,12 +164,6 @@ class OrderService
         $order->estimated_ready_at = now()->addMinutes(max(1, $prepMinutes ?: self::DEFAULT_PREP_MINUTES));
         $order->save();
 
-        $this->auditLogger->log('order.accepted', [
-            'entity_type' => Order::class,
-            'entity_id'   => $order->id,
-            'changes'     => ['status' => 'accepted', 'estimated_ready_at' => $order->estimated_ready_at],
-        ], $request);
-
         $this->queueStatusNotification($order);
 
         $order = $order->refresh()->load(['user:id,name,email,phone', 'delivery:id,address,status', 'store:id,name']);
@@ -194,11 +186,6 @@ class OrderService
         $order->rejection_reason = $reason;
         $order->save();
 
-        $this->auditLogger->log('order.rejected', [
-            'entity_type' => Order::class,
-            'entity_id'   => $order->id,
-            'changes'     => ['status' => 'cancelled', 'rejection_reason' => $reason],
-        ], $request);
 
         $this->queueStatusNotification($order);
 
@@ -228,12 +215,6 @@ class OrderService
             422,
             'Transição de estado inválida.'
         );
-
-        $this->auditLogger->log('order.advanced', [
-            'entity_type' => Order::class,
-            'entity_id'   => $order->id,
-            'changes'     => ['status' => $nextState],
-        ], $request);
 
         $this->queueStatusNotification($order);
 

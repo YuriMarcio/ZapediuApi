@@ -39,6 +39,8 @@ return [
         'client_id' => env('MP_CLIENT_ID'),
         'client_secret' => env('MP_CLIENT_SECRET'),
         'redirect_uri' => env('MP_REDIRECT_URI'),
+        'webhook_secret' => env('MP_WEBHOOK_SECRET'),
+        'access_token' => env('MERCADO_PAGO_ACCESS_TOKEN'),
     ],
 
     'admin' => [

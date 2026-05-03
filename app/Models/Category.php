@@ -28,6 +28,10 @@ class Category extends Model
         'ordem_exibicao' => 'integer',
     ];
 
+    protected $hidden = [
+        'products',
+    ];
+
     public static function boot(): void
     {
         parent::boot();

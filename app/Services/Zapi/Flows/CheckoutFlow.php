@@ -807,7 +807,8 @@ class CheckoutFlow
         Log::info('Creating order with code '.$orderCode, ['store' => $store?->toArray()]);
 
         $order = Order::query()->create([
-            'code'             => $orderCode,
+            'code'             => strtoupper(Str::random(6)),
+            'code_confirm'     => $codeconfirm,
             'user_id'          => $customerUser?->id,
             'company_id'       => $store?->company_id,
             'store_id'         => $store?->id,

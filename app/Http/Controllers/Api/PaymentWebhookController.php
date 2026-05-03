@@ -3,17 +3,107 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Models\Company;
-use App\Models\Order;
-use App\Models\Scopes\CompanyScope;
-use App\Services\Zapi\ZapiClient;
+use App\Jobs\Payment\ProcessMercadoPagoWebhookJob;
+use App\Services\Payment\MercadoPagoPaymentService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
 
 class PaymentWebhookController extends Controller
 {
-    public function __invoke(Request $request): JsonResponse
+    /**
+     * Handle payment webhook requests
+     *
+     * @param Request $request
+     * @param MercadoPagoPaymentService $paymentService
+     * @return JsonResponse
+     */
+    public function __invoke(Request $request, MercadoPagoPaymentService $paymentService): JsonResponse
+    {
+        // Verificar se é uma notificação do Mercado Pago
+        $isMercadoPago = $request->has('type') && $request->has('data.id');
+        
+        if ($isMercadoPago) {
+            return $this->handleMercadoPagoWebhook($request, $paymentService);
+        }
+        
+        // Fallback para o webhook antigo (compatibilidade)
+        return $this->handleLegacyWebhook($request);
+    }
+
+    /**
+     * Processa webhook do Mercado Pago (IPN)
+     *
+     * @param Request $request
+     * @param MercadoPagoPaymentService $paymentService
+     * @return JsonResponse
+     */
+    private function handleMercadoPagoWebhook(Request $request, MercadoPagoPaymentService $paymentService): JsonResponse
+    {
+        Log::info('PaymentWebhook: Mercado Pago webhook received', [
+            'type' => $request->input('type'),
+            'action' => $request->input('action'),
+            'payment_id' => $request->input('data.id'),
+            'request_id' => $request->header('x-request-id')
+        ]);
+
+        // Validar assinatura do webhook
+        if (!$paymentService->validateWebhookSignature($request)) {
+            Log::warning('PaymentWebhook: Invalid Mercado Pago webhook signature', [
+                'signature' => $request->header('x-signature'),
+                'ip' => $request->ip()
+            ]);
+            
+            return response()->json(['ok' => false, 'error' => 'Invalid signature'], 401);
+        }
+
+        $type = $request->input('type');
+        $paymentId = $request->input('data.id');
+
+        // Só processamos notificações de pagamento
+        if ($type !== 'payment') {
+            Log::info('PaymentWebhook: Ignoring non-payment Mercado Pago notification', ['type' => $type]);
+            return response()->json(['ok' => true, 'ignored' => true, 'reason' => 'Non-payment notification']);
+        }
+
+        // Despachar job para processamento assíncrono
+        try {
+            ProcessMercadoPagoWebhookJob::dispatch(
+                $request->all(),
+                $paymentId
+            )->onQueue('payments');
+
+            Log::info('PaymentWebhook: Mercado Pago webhook queued for processing', [
+                'payment_id' => $paymentId,
+                'queue' => 'payments'
+            ]);
+
+            return response()->json([
+                'ok' => true,
+                'message' => 'Webhook received and queued for processing',
+                'payment_id' => $paymentId
+            ]);
+        } catch (\Exception $e) {
+            Log::error('PaymentWebhook: Failed to queue Mercado Pago webhook', [
+                'payment_id' => $paymentId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'ok' => false,
+                'error' => 'Failed to process webhook',
+                'payment_id' => $paymentId
+            ], 500);
+        }
+    }
+
+    /**
+     * Processa webhook legado (compatibilidade)
+     *
+     * @param Request $request
+     * @return JsonResponse
+     */
+    private function handleLegacyWebhook(Request $request): JsonResponse
     {
         $status    = strtolower(trim((string) $request->input('status', '')));
         $reference = trim((string) ($request->input('reference') ?? $request->input('order_code') ?? $request->input('code') ?? ''));
@@ -23,8 +113,8 @@ class PaymentWebhookController extends Controller
             return response()->json(['ok' => false, 'error' => 'missing or unsupported status/reference']);
         }
 
-        /** @var Order|null $order */
-        $order = Order::withoutGlobalScope(CompanyScope::class)
+        /** @var \App\Models\Order|null $order */
+        $order = \App\Models\Order::withoutGlobalScope(\App\Models\Scopes\CompanyScope::class)
             ->where('code', $reference)
             ->first();
 
@@ -49,8 +139,8 @@ class PaymentWebhookController extends Controller
 
         // Configure Z-API credentials from the order's company
         if ($order->company_id) {
-            /** @var Company|null $company */
-            $company = Company::query()->find($order->company_id);
+            /** @var \App\Models\Company|null $company */
+            $company = \App\Models\Company::query()->find($order->company_id);
 
             if ($company !== null) {
                 if ($company->zapi_instance_id)    { config()->set('services.zapi.instance_id',    $company->zapi_instance_id); }
@@ -68,7 +158,7 @@ class PaymentWebhookController extends Controller
             ."Obrigado por pediu na *{$storeName}*! 🙏";
 
         try {
-            app(ZapiClient::class)->sendText($customerPhone, $message);
+            app(\App\Services\Zapi\ZapiClient::class)->sendText($customerPhone, $message);
         } catch (\Throwable $exception) {
             Log::warning('PaymentWebhook: failed to send WhatsApp confirmation.', [
                 'order_code' => $reference,

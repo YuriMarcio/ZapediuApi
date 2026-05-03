@@ -9,14 +9,17 @@ return new class extends Migration
     public function up(): void
     {
         Schema::table('stores', function (Blueprint $table) {
-            $table->foreignId('category_id')->nullable()->after('segment')->constrained('categories')->nullOnDelete();
+            $table->foreignId('category_id')->nullable()->after('segment');
+            // Não adicionamos constraint para evitar dependência circular
+            // A constraint será adicionada posteriormente via migration separada
+            // após a criação de ambas as tabelas
         });
     }
 
     public function down(): void
     {
         Schema::table('stores', function (Blueprint $table) {
-            $table->dropConstrainedForeignId('category_id');
+            $table->dropColumn('category_id');
         });
     }
 };

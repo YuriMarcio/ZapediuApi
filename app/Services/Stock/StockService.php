@@ -6,7 +6,6 @@ use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductVariation;
 use App\Services\ImageUploadService;
-use App\Support\Audit\AuditLogger;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -17,7 +16,6 @@ use Illuminate\Support\Facades\Storage;
 class StockService
 {
     public function __construct(
-        private readonly AuditLogger $auditLogger,
         private readonly ImageUploadService $imageUploader,
     ) {}
 
@@ -32,7 +30,7 @@ class StockService
      */
     public function listProducts(Request $request): LengthAwarePaginator
     {
-        return Product::query()
+        $paginator = Product::query()
             ->with([
                 'category:id,name,color,slug',
                 'selectionGroup:id,name,display_type,is_required,is_active',
@@ -59,6 +57,22 @@ class StockService
             )
             ->orderBy('products.name')
             ->paginate((int) $request->query('per_page', 15));
+
+        // Hide circular relationships to prevent infinite recursion
+        $paginator->getCollection()->transform(function ($product) {
+            if ($product->relationLoaded('selectionGroup') && $product->selectionGroup) {
+                $product->selectionGroup->makeHidden('products');
+            }
+            if ($product->relationLoaded('variationGroup') && $product->variationGroup) {
+                $product->variationGroup->makeHidden('products');
+            }
+            if ($product->relationLoaded('category') && $product->category) {
+                $product->category->makeHidden('products');
+            }
+            return $product;
+        });
+
+        return $paginator;
     }
 
     /**
@@ -81,13 +95,7 @@ class StockService
 
             $this->syncVariations($product, $variations);
 
-            $this->auditLogger->log('product.created', [
-                'entity_type' => Product::class,
-                'entity_id'   => $product->id,
-                'changes'     => $product->toArray(),
-            ], $request);
-
-            return $product->load([
+            $product->load([
                 'category:id,name,color,slug',
                 'selectionGroup:id,name,display_type,is_required,is_active',
                 'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
@@ -95,6 +103,19 @@ class StockService
                 'variationGroup.options:id,variation_group_id,name,price,sort_order',
                 'variations',
             ]);
+
+            // Hide circular relationships to prevent infinite recursion
+            if ($product->selectionGroup) {
+                $product->selectionGroup->makeHidden('products');
+            }
+            if ($product->variationGroup) {
+                $product->variationGroup->makeHidden('products');
+            }
+            if ($product->category) {
+                $product->category->makeHidden('products');
+            }
+
+            return $product;
         });
     }
 
@@ -119,13 +140,7 @@ class StockService
 
             $this->syncVariations($product, $variations);
 
-            $this->auditLogger->log('product.updated', [
-                'entity_type' => Product::class,
-                'entity_id'   => $product->id,
-                'changes'     => $product->toArray(),
-            ], $request);
-
-            return $product->refresh()->load([
+            $product->refresh()->load([
                 'category:id,name,color,slug',
                 'selectionGroup:id,name,display_type,is_required,is_active',
                 'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
@@ -133,6 +148,19 @@ class StockService
                 'variationGroup.options:id,variation_group_id,name,price,sort_order',
                 'variations',
             ]);
+
+            // Hide circular relationships to prevent infinite recursion
+            if ($product->selectionGroup) {
+                $product->selectionGroup->makeHidden('products');
+            }
+            if ($product->variationGroup) {
+                $product->variationGroup->makeHidden('products');
+            }
+            if ($product->category) {
+                $product->category->makeHidden('products');
+            }
+
+            return $product;
         });
     }
 
@@ -141,12 +169,6 @@ class StockService
      */
     public function deleteProduct(Product $product, Request $request): void
     {
-        $this->auditLogger->log('product.deleted', [
-            'entity_type' => Product::class,
-            'entity_id'   => $product->id,
-            'changes'     => $product->toArray(),
-        ], $request);
-
         $product->clearMediaCollection('products');
         $product->delete();
     }
@@ -192,12 +214,6 @@ class StockService
 
             $category = Category::query()->create($payload);
 
-            $this->auditLogger->log('category.created', [
-                'entity_type' => Category::class,
-                'entity_id' => $category->id,
-                'changes' => $category->toArray(),
-            ], $request);
-
             return $category->refresh()->loadCount('products');
         });
     }
@@ -219,11 +235,6 @@ class StockService
 
             $category->fill($payload)->save();
 
-            $this->auditLogger->log('category.updated', [
-                'entity_type' => Category::class,
-                'entity_id' => $category->id,
-                'changes' => $category->toArray(),
-            ], $request);
 
             return $category->refresh()->loadCount('products');
         });

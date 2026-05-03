@@ -100,6 +100,16 @@ class ButtonHandler
 
     private function handleFlowButton(string $phone, string $buttonId): bool
     {
+        // FLUXO DE FINALIZAR CORRIDA (motoboy)
+        if (str_starts_with($buttonId, 'finish_order|')) {
+            $orderId = explode('|', $buttonId)[1] ?? null;
+            if ($orderId) {
+                // Salva no Redis que este motoboy está na tela de digitar código (Expira em 2 horas)
+                \Illuminate\Support\Facades\Redis::set("waiting_code:{$phone}", $orderId, 'EX', 7200);
+                $this->zapiClient->sendText($phone, "🔑 *Informe o código do cliente!*\n\nPeça ao cliente o codigo de 5 caracteres e *digite aqui* para finalizar a entrega:");
+                return true;
+            }
+        }
         // 1. IDs EXATOS (Switch para performance)
         switch ($buttonId) {
             case 'btn_ver_lojas':

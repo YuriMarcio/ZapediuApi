@@ -5,7 +5,6 @@ namespace App\Http\Controllers\Api\Tenant;
 use App\Http\Controllers\Controller;
 use App\Models\Company;
 use App\Models\Plan;
-use App\Support\Audit\AuditLogger;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -42,7 +41,7 @@ class CompanyController extends Controller
         return response()->json($data);
     }
 
-    public function update(Request $request, TenantContext $tenant, AuditLogger $auditLogger): JsonResponse
+    public function update(Request $request, TenantContext $tenant): JsonResponse
     {
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:160'],
@@ -60,16 +59,12 @@ class CompanyController extends Controller
         $company->fill($data);
         $company->save();
 
-        $auditLogger->log('company.updated', [
-            'entity_type' => Company::class,
-            'entity_id' => $company->id,
-            'changes' => $data,
-        ], $request);
+       
 
         return response()->json($company);
     }
 
-    public function switchPlan(Request $request, TenantContext $tenant, AuditLogger $auditLogger): JsonResponse
+    public function switchPlan(Request $request, TenantContext $tenant): JsonResponse
     {
         $data = $request->validate([
             'plan_slug' => ['required', 'string', Rule::exists('plans', 'slug')->where('is_active', true)],
@@ -80,11 +75,7 @@ class CompanyController extends Controller
         $company->plan_id = $plan->id;
         $company->save();
 
-        $auditLogger->log('company.plan_changed', [
-            'entity_type' => Company::class,
-            'entity_id'   => $company->id,
-            'changes'     => ['plan_slug' => $data['plan_slug']],
-        ], $request);
+        
 
         return response()->json([
             'message' => 'Plano atualizado com sucesso.',

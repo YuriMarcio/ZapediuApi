@@ -20,6 +20,10 @@ class VariationGroup extends Model
         'required' => 'boolean',
     ];
 
+    protected $hidden = [
+        'products',
+    ];
+
     public function options(): HasMany
     {
         return $this->hasMany(VariationGroupOption::class)->orderBy('sort_order');

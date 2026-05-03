@@ -21,7 +21,7 @@ return new class () extends Migration {
     public function down(): void
     {
         Schema::table('wallets', function (Blueprint $table) {
-            //
+            $table->dropColumn('plan_id');
         });
     }
 };

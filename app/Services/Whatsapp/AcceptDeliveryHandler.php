@@ -112,9 +112,7 @@ class AcceptDeliveryHandler
         $storeLocation = ($latLoja && $lonLoja) ? "{$latLoja},{$lonLoja}" : urlencode($storeAddress);
         $customerLocation = ($latCliente && $lonCliente) ? "{$latCliente},{$lonCliente}" : urlencode($customerAddress);
 
-        $googleMapsLink = "https://www.google.com/maps/dir/?api=1&destination={$storeLocation}&destination={$customerLocation}";
-        $wazeStoreLink = "https://waze.com/ul?q={$storeLocation}&navigate=yes";
-        $wazeCustomerLink = "https://waze.com/ul?q={$customerLocation}&navigate=yes";
+        $googleMapsLink = "https://www.google.com/maps/dir/?api=1&destination={$storeLocation}&destination={$customerLocation}";;
 
         $itemsList = "";
         if (isset($payload['cart']['items']) && is_array($payload['cart']['items'])) {
@@ -142,8 +140,6 @@ class AcceptDeliveryHandler
                     . "📏 *Distância Rota:* {$kmTexto}\n\n"
                     . "🗺️ *Rotas Automáticas:*\n"
                     . "📍 *Google Maps (Rota Completa):*\n{$googleMapsLink}\n\n"
-                    . "🚘 *Waze (1º Ir p/ Loja):*\n{$wazeStoreLink}\n"
-                    . "🚘 *Waze (2º Ir p/ Cliente):*\n{$wazeCustomerLink}\n\n"
                     . "🛍️ *Itens do Pedido:*\n{$itemsList}\n"
                     . "💳 *Pagamento:* {$paymentMethod} - {$paymentStatus}\n"
                     . "💰 *Taxa:* R$ {$feeFormatted}\n"

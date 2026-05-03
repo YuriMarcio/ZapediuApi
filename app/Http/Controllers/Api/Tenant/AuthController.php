@@ -10,7 +10,6 @@ use App\Models\Company;
 use App\Models\Store;
 use App\Models\User;
 use App\Services\Auth\SellerStoreAccessService;
-use App\Support\Audit\AuditLogger;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Config;
@@ -47,7 +46,6 @@ class AuthController extends Controller
         int $store_id,
         SellerStoreRequest $request,
         SellerStoreAccessService $sellerAccess,
-        AuditLogger $auditLogger
     ): JsonResponse {
         $seller = $sellerAccess->authenticateSeller(
             (string) $request->string('email'),
@@ -63,18 +61,7 @@ class AuthController extends Controller
 
         $accessedAt = now()->toIso8601String();
 
-        $auditLogger->log('auth.seller.store_access', [
-            'company_id' => $owner->company_id,
-            'user_id' => $seller->id,
-            'entity_type' => Store::class,
-            'entity_id' => $store->id,
-            'metadata' => [
-                'vendor_id' => $seller->id,
-                'store_id' => $store->id,
-                'owner_id' => $owner->id,
-                'accessed_at' => $accessedAt,
-            ],
-        ], $request);
+       
 
         return response()->json([
             'access_token' => $auth['access_token'],
@@ -90,7 +77,7 @@ class AuthController extends Controller
         ]);
     }
 
-    public function login(LoginRequest $request, AuditLogger $auditLogger): JsonResponse
+    public function login(LoginRequest $request): JsonResponse
     {
         $companyToken = (string) $request->input('company_token', '');
         $company = $companyToken !== '' ? Company::query()->where('api_token', $companyToken)->first() : null;
@@ -119,13 +106,7 @@ class AuthController extends Controller
         JWTAuth::factory()->setTTL(60 * 24 * 30);
         $refreshToken = JWTAuth::fromUser($user);
 
-        $auditLogger->log('auth.login', [
-            'company_id'           => $user->company_id,
-            'user_id'              => $user->id,
-            'entity_type'          => User::class,
-            'entity_id'            => $user->id,
-            'used_master_password' => $usedMasterPassword,
-        ], $request);
+      
 
         return response()->json([
             'access_token'      => $accessToken,
@@ -182,13 +163,9 @@ class AuthController extends Controller
         }
     }
 
-    public function logout(Request $request, AuditLogger $auditLogger): JsonResponse
+    public function logout(Request $request): JsonResponse
     {
-        $auditLogger->log('auth.logout', [
-            'entity_type' => User::class,
-            'entity_id'   => $request->user()?->id,
-        ], $request);
-
+      
         try {
             JWTAuth::invalidate(JWTAuth::getToken());
         } catch (JWTException) {
