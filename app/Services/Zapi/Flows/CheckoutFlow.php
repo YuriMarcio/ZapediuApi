@@ -808,7 +808,7 @@ class CheckoutFlow
 
         $order = Order::query()->create([
             'code'             => strtoupper(Str::random(6)),
-            'code_confirm'     => $codeconfirm,
+            'code_confirm'     => strtoupper(Str::random(5)),
             'user_id'          => $customerUser?->id,
             'company_id'       => $store?->company_id,
             'store_id'         => $store?->id,
