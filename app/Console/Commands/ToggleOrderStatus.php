@@ -5,7 +5,7 @@ namespace App\Console\Commands;
 use Illuminate\Console\Command;
 use App\Models\Order;
 
-class TestStatus extends Command
+class ToggleOrderStatus extends Command
 {
     // O comando que você vai digitar no terminal
     protected $signature = 'zap:test {id=76}';

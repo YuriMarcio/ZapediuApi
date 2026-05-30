@@ -149,6 +149,89 @@ class ButtonHandler
 
         // 2. IDs DINÂMICOS (Prefixos e Regex)
 
+        // NOVO PEDIDO: order_new_{id} - Fazer novo pedido (limpa sessão atual)
+        if (str_starts_with($buttonId, 'order_new_')) {
+            $orderId = (int) str_replace('order_new_', '', $buttonId);
+            
+            // Clear current state (including active_order)
+            $this->flow->resetState($phone);
+            
+            // Optional: mark previous order as abandoned
+            $order = \App\Models\Order::find($orderId);
+            if ($order && $order->status === 'pending' && $order->payment_status !== 'paid') {
+                $order->update(['status' => 'cancelled', 'rejection_reason' => 'abandoned']);
+            }
+            
+            // Start fresh flow
+            return $this->greetingFlow->sendWelcomePrompt($phone);
+        }
+
+        // RETOMAR PAGAMENTO: order_resume_{id} - Reenviar link de pagamento
+        if (str_starts_with($buttonId, 'order_resume_')) {
+            $orderId = (int) str_replace('order_resume_', '', $buttonId);
+            $order = \App\Models\Order::find($orderId);
+            
+            if (!$order) {
+                $this->zapiClient->sendText($phone, "❌ Pedido não encontrado.");
+                return true;
+            }
+            
+            // Get payment link from state or regenerate
+            $state = $this->flow->getState($phone);
+            $paymentLink = $state['active_order']['payment_link'] ?? $state['last_payment_link'] ?? '';
+            
+            if (empty($paymentLink)) {
+                // Regenerate payment link
+                $paymentLink = $this->checkoutFlow->buildPaymentLink(
+                    $phone,
+                    $order->store->slug ?? '',
+                    [],
+                    (float) $order->total,
+                    $order->code
+                );
+            }
+            
+            $message = "🔗 *Link de pagamento reenviado!*\n\n";
+            $message .= "🧾 Pedido: #{$order->code}\n";
+            $message .= "💰 Valor: R$ " . number_format($order->total, 2, ',', '.') . "\n\n";
+            $message .= "Clique no botão abaixo para pagar:";
+            
+            $this->zapiClient->sendButtonActions(
+                $phone,
+                $message,
+                [['type' => 'URL', 'url' => $paymentLink, 'label' => '🔗 Abrir link de pagamento']]
+            );
+            
+            return true;
+        }
+
+        // CANCELAR PEDIDO: order_cancel_{id} - Cancelar pedido pendente
+        if (str_starts_with($buttonId, 'order_cancel_')) {
+            $orderId = (int) str_replace('order_cancel_', '', $buttonId);
+            $order = \App\Models\Order::find($orderId);
+            
+            if (!$order) {
+                $this->zapiClient->sendText($phone, "❌ Pedido não encontrado.");
+                return true;
+            }
+            
+            if ($order->status !== 'pending' || $order->payment_status === 'paid') {
+                $this->zapiClient->sendText($phone, "❌ Este pedido não pode ser cancelado (já pago ou em andamento).");
+                return true;
+            }
+            
+            // Cancel order
+            $order->update(['status' => 'cancelled', 'rejection_reason' => 'customer_cancelled']);
+            
+            // Clear active order from state
+            $state = $this->flow->getState($phone);
+            unset($state['active_order']);
+            $this->flow->saveState($phone, $state);
+            
+            $this->zapiClient->sendText($phone, "✅ Pedido #{$order->code} cancelado com sucesso!\n\nDigite *oi* para fazer um novo pedido.");
+            return true;
+        }
+
         // NOVA REGRA: Esvaziar carrinho e adicionar item de outra loja
         if (str_starts_with($buttonId, 'cart_clear_and_add_')) {
             $productId = (int) str_replace('cart_clear_and_add_', '', $buttonId);

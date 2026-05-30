@@ -55,7 +55,7 @@ class ProcessIncomingWebhookAction
             config()->set('services.zapi.client_token', $company->zapi_client_token ?: config('services.zapi.client_token'));
         }
 
-        $this->zapiWebhookService->maybeSendAutoReply($payload);
+        $this->sendEvolutionReply($payload);
 
         return $event;
     }

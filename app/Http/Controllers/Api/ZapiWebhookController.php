@@ -19,6 +19,11 @@ class ZapiWebhookController extends Controller
         $expectedToken = $company?->zapi_webhook_token ?: (string) config('services.zapi.webhook_token');
         $mustValidateToken = $expectedToken !== '' && $expectedToken !== 'change-me';
 
+        \Log::info('Recebido webhook ZAPI', [
+            'headers' => request()->headers->all(),
+            'body' => request()->all(),
+        ]);
+
         if ($mustValidateToken) {
             $providedToken = (string) $request->header('X-Webhook-Token');
 

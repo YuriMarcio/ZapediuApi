@@ -16,7 +16,10 @@ use Illuminate\Support\Facades\Log;
 
 class ProcessMercadoPagoWebhookJob implements ShouldQueue
 {
-    use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
+    use Dispatchable;
+    use InteractsWithQueue;
+    use Queueable;
+    use SerializesModels;
 
     /**
      * Número de tentativas
@@ -76,10 +79,10 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
         MercadoPagoPaymentService $paymentService,
         WhatsAppOrchestrator $whatsappOrchestrator
     ): void {
-        Log::info('ProcessMercadoPagoWebhookJob: Starting', [
-            'payment_id' => $this->paymentId,
-            'webhook_type' => $this->webhookData['type'] ?? 'unknown'
-        ]);
+        Log::info('🚀 [DEBUG 1] JOB DO MP INICIOU!', [
+                    'payment_id' => $this->paymentId,
+                    'webhook_data' => $this->webhookData
+                ]);
 
         // Processar o webhook
         $result = $paymentService->processWebhook($this->webhookData);
@@ -282,9 +285,9 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
         $storeName = $order->store?->name ?? 'a loja';
         $paymentMethod = $paymentService->formatPaymentMethod($payment);
         $amount = $paymentService->formatAmount($payment['transaction_amount'], $payment['currency_id'] ?? 'BRL');
-        
+
         // Formatar data de aprovação
-        $approvedAt = !empty($payment['date_approved']) 
+        $approvedAt = !empty($payment['date_approved'])
             ? date('d/m/Y H:i', strtotime($payment['date_approved']))
             : date('d/m/Y H:i');
 
@@ -292,11 +295,13 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
         $message = "✅ *Pagamento Confirmado!*\n\n"
             . "Oba! Seu pagamento foi aprovado com sucesso! 🎉\n\n"
             . "📋 *Pedido:* #{$order->code}\n"
+            . "🔐 *Código de confirmação:* {$order->code_confirm}\n"
             . "💰 *Valor:* {$amount}\n"
             . "💳 *Forma:* {$paymentMethod}\n"
             . "📅 *Data:* {$approvedAt}\n\n"
             . "🍔 Seu pedido já está sendo preparado com muito carinho!\n"
-            . "🛵 Em breve estará a caminho da sua casa!\n\n";
+            . "🛵 Em breve estará a caminho da sua casa!\n\n"
+            . "📝 *Importante:* Apresente o código *{$order->code_confirm}* ao entregador para confirmar a entrega.\n\n";
 
         // Adicionar endereço se disponível
         if ($order->customer_address) {
@@ -316,7 +321,7 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
             // Configurar credenciais Z-API da company
             if ($order->company_id) {
                 $company = Company::find($order->company_id);
-                
+
                 if ($company) {
                     config()->set('services.zapi.instance_id', $company->zapi_instance_id ?: config('services.zapi.instance_id'));
                     config()->set('services.zapi.instance_token', $company->zapi_instance_token ?: config('services.zapi.instance_token'));

@@ -4,11 +4,17 @@ namespace App\Services\Whatsapp;
 
 use App\Models\Order;
 use App\Services\Zapi\ZapiClient;
+use App\Services\Zapi\Flows\FlowManager;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
 
-class FinishDeliveryHandler 
+class FinishDeliveryHandler
 {
+    public function __construct(
+        private readonly FlowManager $flow
+    ) {
+    }
+
     public function handle(string $driverPhone, int $orderId, string $typedCode, ZapiClient $zapi): void
     {
         $order = Order::find($orderId);
@@ -36,9 +42,48 @@ class FinishDeliveryHandler
             $zapi->sendText($driverPhone, "✅ *CORRIDA FINALIZADA!*\n\nCódigo validado com sucesso. Excelente trabalho, parceiro! 🚀");
             
             Log::info("🏁 Motoboy finalizou a entrega do pedido {$orderId} com sucesso.");
+
+            // Reset customer session and send thank you message
+            $this->resetCustomerSession($order, $zapi);
         } else {
             // ❌ CÓDIGO ERRADO
             $zapi->sendText($driverPhone, "❌ *Código Incorreto!*\n\nVocê digitou *{$typedCode}*. Confirme com o cliente os últimos 4 caracteres do número do pedido e digite novamente:");
+        }
+    }
+
+    /**
+     * Reset customer session and send thank you message
+     */
+    private function resetCustomerSession(Order $order, ZapiClient $zapi): void
+    {
+        try {
+            // Get customer phone from order
+            $customerPhone = $order->user?->phone;
+            if (!$customerPhone && $order->user?->primaryPhone) {
+                $customerPhone = $order->user->primaryPhone->phone;
+            }
+
+            if ($customerPhone) {
+                // Reset customer session
+                $this->flow->resetState($customerPhone);
+                
+                // Send thank you message
+                $message = "🎉 *Pedido ENTREGUE!*\n\n";
+                $message .= "Seu pedido #{$order->code} foi entregue com sucesso!\n\n";
+                $message .= "Obrigado por escolher Zapediu! 🛵💨\n\n";
+                $message .= "Deseja fazer outro pedido? Digite *oi* para começar!";
+                
+                $zapi->sendText($customerPhone, $message);
+                
+                Log::info("Customer session reset and thank you sent for order {$order->code}", [
+                    'customer_phone' => $customerPhone,
+                ]);
+            }
+        } catch (\Throwable $e) {
+            Log::error('Failed to reset customer session', [
+                'order_id' => $order->id,
+                'error' => $e->getMessage(),
+            ]);
         }
     }
 }

@@ -13,9 +13,10 @@ use MercadoPago\MercadoPagoConfig;
 use MercadoPago\Client\Payment\PaymentClient;
 use MercadoPago\Exceptions\MPApiException;
 use App\Models\Order;
+
 class MercadoPagoController extends Controller
 {
-// =========================================================================
+    // =========================================================================
     // 2. GERAÇÃO DE PIX: Usa a carteira da loja para receber o dinheiro
     // =========================================================================
     public function createPix(Request $request)
@@ -59,16 +60,18 @@ class MercadoPagoController extends Controller
         // ---------------------------------------------------------------------
         // Pegamos a carteira baseada no company_id do pedido
         // (Se o seu pedido não tiver company_id direto, use $order->store->company_id)
-         Log::info('company_id qual é ?', [
-            'company_id' => $order->company_id
+        Log::info('company_id qual é ?', [
+           'company_id' => $order->company_id
         ]);
 
-        $wallet = Wallet::where('company_id', $order->store_id)->first();
+        $wallet = Wallet::where('company_id', $order->company_id)->first();
 
-        Log::info("wallet da company",
-        [
+        Log::info(
+            "wallet da company",
+            [
             "wallet" => $wallet
-        ]);
+        ]
+        );
 
         if (!$wallet || !$wallet->is_active || empty($wallet->mp_access_token)) {
             Log::warning('Tentativa de PIX em loja sem carteira ativa', ['order_code' => $order->code]);
@@ -83,6 +86,10 @@ class MercadoPagoController extends Controller
 
         // Configura o Mercado Pago com o TOKEN DA LOJA (e não o do seu .env)
         MercadoPagoConfig::setAccessToken($wallet->mp_access_token);
+        // Set sandbox environment for test tokens
+        if (str_starts_with($wallet->mp_access_token, 'TEST-')) {
+            MercadoPagoConfig::setRuntimeEnviroment(MercadoPagoConfig::LOCAL);
+        }
 
         Log::info('Access token da LOJA configurado para o PIX', [
             'company_id' => $wallet->company_id
@@ -93,7 +100,7 @@ class MercadoPagoController extends Controller
         $description = 'Pedido #' . $order->code . ' - ' . config('app.name');
         $name = $order->user?->name ?? 'Cliente Padrão';
         $email = $order->user?->email ?? 'cliente@example.com';
-        
+
         $cpf = preg_replace('/[^0-9]/', '', $data['cpf'] ?? $order->user?->cpf ?? '12345678909');
         if (empty($cpf)) {
             $cpf = '12345678909';
@@ -106,6 +113,8 @@ class MercadoPagoController extends Controller
                 "transaction_amount" => $amount,
                 "description" => $description,
                 "payment_method_id" => "pix",
+                "external_reference" => $order->code, // Para o seu Job achar o pedido
+                "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
                 "payer" => [
                     "email" => $email,
                     "first_name" => $name,
@@ -142,9 +151,6 @@ class MercadoPagoController extends Controller
     // =========================================================================
     public function createCardPayment(Request $request)
     {
-        Log::info('Iniciando pagamento por Cartão de Crédito', [
-            'order_code' => $request->input('code')
-        ]);
 
         // 1. Validações (Note que agora exigimos o token do cartão e parcelas)
         $data = $request->validate([
@@ -157,7 +163,6 @@ class MercadoPagoController extends Controller
             'cpf'               => 'nullable|string',
             'email'             => 'nullable|email',
         ]);
-
         $order = Order::with('user')->where('code', $data['code'])->first();
 
         if (!$order) {
@@ -184,11 +189,15 @@ class MercadoPagoController extends Controller
 
         // 3. Injetar o Token da LOJA no SDK do Mercado Pago
         MercadoPagoConfig::setAccessToken($wallet->mp_access_token);
+        // Set sandbox environment for test tokens
+        if (str_starts_with($wallet->mp_access_token, 'TEST-')) {
+            MercadoPagoConfig::setRuntimeEnviroment(MercadoPagoConfig::LOCAL);
+        }
 
         $amount = (float) $order->total;
         $description = 'Pedido #' . $order->code . ' - ' . config('app.name');
         $email = $data['email'] ?? $order->user?->email ?? 'cliente@example.com';
-        
+
         $cpf = preg_replace('/[^0-9]/', '', $data['cpf'] ?? $order->user?->cpf ?? '12345678909');
         if (empty($cpf)) {
             $cpf = '12345678909';
@@ -196,13 +205,33 @@ class MercadoPagoController extends Controller
 
         $client = new PaymentClient();
 
+        Log::info('Dados para pagamento com cartão', [
+            "transaction_amount" => $amount,
+            "token"              => $data['card_token'],
+            "description"        => $description,
+            "external_reference" => $order->code,
+            "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
+            "installments"       => $data['installments'],
+            "payment_method_id"  => $data['payment_method_id'],
+            "issuer_id"          => $data['issuer_id'] ?? null,
+            "payer" => [
+                "email" => $email,
+                "identification" => [
+                    "type" => "CPF",
+                    "number" => $cpf,
+                ],
+            ]
+        ]);
+
         try {
             // 4. Disparar a cobrança no cartão
             $payment = $client->create([
                 "transaction_amount" => $amount,
-                "token"              => $data['card_token'], // O token seguro do plástico
+                "token"              => $data['card_token'],
                 "description"        => $description,
-                "installments"       => (int) $data['installments'],
+                "external_reference" => $order->code,
+                "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
+                "installments"       => $data['installments'],
                 "payment_method_id"  => $data['payment_method_id'],
                 "issuer_id"          => $data['issuer_id'] ?? null,
                 "payer" => [
@@ -224,7 +253,7 @@ class MercadoPagoController extends Controller
             if ($payment->status === 'approved') {
                 // Aqui você pode atualizar o status do pedido no seu banco de dados
                 // $order->update(['payment_status' => 'paid']);
-                
+
                 return response()->json([
                     'status' => 'approved',
                     'message' => 'Pagamento aprovado com sucesso!',
@@ -255,68 +284,44 @@ class MercadoPagoController extends Controller
     }
 
 
-    public function handleCallback(Request $request)
+public function handleCallback(Request $request)
     {
-        // 1. Validar se o MP enviou o 'code' e o 'state' (ID da Empresa)
         $code = $request->query('code');
+        $companyId = $request->query('state');
 
         Log::info('Callback Mercado Pago recebido', [
             'code' => $code,
-            'state' => $request->query('state'),
+            'state' => $companyId,
         ]);
-
-        $companyId = $request->query('state');
 
         if (!$code || !$companyId) {
             return response()->json(['error' => 'Autorização inválida'], 400);
         }
 
-        // 2. Trocar o CODE pelo Access Token (Server-to-Server)
-        $response = Http::asForm()->post('https://api.mercadopago.com/oauth/token', [
-            'client_id' => config('services.mercadopago.client_id'),
-            'client_secret' => config('services.mercadopago.client_secret'),
-            'grant_type' => 'authorization_code',
-            'code' => $code,
-            'redirect_uri' => config('services.mercadopago.redirect_uri'),
-        ]);
+        // =========================================================================
+        // FORÇAR CREDENCIAIS DE SANDBOX DIRETAMENTE NO BANCO PARA TESTES
+        // =========================================================================
+        // Copie estes dados exatamente da sua tela de "Credenciais de teste"
+        
+        $public_key = 'TEST-dbf94075-e506-4542-9bfc-2e4f16dcee6f'; 
+        $access_token = 'TEST-1754582617723017-040823-7498a7a40dedd959cbc32a67640dbe39-561921860'; // Clique no "olho" no painel e cole aqui o Token Completo
 
-
-        if ($response->failed()) {
-            return response()->json([
-                'error' => 'Falha ao obter token', 
-                'mp_motivo' => $response->json() // Isso vai te dizer exatamente o que você errou!
-            ], 500);
-        }
-
-        $data = $response->json();
-
-        Log::info('response mp',[
-            'data' => $data
-        ]);
-
-
-        // 3. Salvar na Wallet da Company
         $wallet = Wallet::where('company_id', $companyId)->first();
-
-        Log::info('Atualizando carteira com dados do Mercado Pago', [
-            'company_id' => $companyId,
-            'wallet_found' => (bool) $wallet,
-        ]);
 
         if ($wallet) {
             $wallet->update([
-                'mp_access_token'  => $data['access_token'],
-                'mp_refresh_token' => $data['refresh_token'],
-                'mp_public_key'    => $data['public_key'],
-                'mp_user_id'       => $data['user_id'],
-                'mp_expires_at'    => now()->addSeconds($data['expires_in']),
+                'mp_access_token'  => $access_token, 
+                'mp_refresh_token' => 'mock_refresh_token_sandbox',
+                'mp_public_key'    => $public_key,
+                'mp_user_id'       => '385386043',
+                'mp_expires_at'    => now()->addYears(1), // Evita expirar durante os testes
                 'is_active'        => true
             ]);
+
+            Log::info('Carteira forçada para modo Sandbox com sucesso!', ['company_id' => $companyId]);
         }
 
-        // 4. Redirecionar para o seu Painel Frontend
-        // Substitua pela URL do seu dashboard
-        return redirect()->away("https://painel.zapediu.com.br/painel/Carteira");
+        // Redireciona de volta para o seu painel do lojista
+        return redirect()->away("https://localhost:5173/painel/Carteira");
     }
-
 }

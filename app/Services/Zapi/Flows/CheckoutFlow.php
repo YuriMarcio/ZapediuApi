@@ -9,6 +9,7 @@ use App\Models\UserAddress;
 use App\Models\UserPhone;
 use App\Services\Zapi\ZapiClient;
 use Carbon\CarbonImmutable;
+use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -19,7 +20,6 @@ class CheckoutFlow
     public function __construct(
         private FlowManager $flow,
         private ZapiClient $zapiClient,
-        private GreetingFlow $greetingFlow // Necessário para o sendWelcomePrompt
     ) {
     }
 
@@ -38,7 +38,8 @@ class CheckoutFlow
     // 5. Métodos "Emprestados" ou Stubs necessários
     private function sendWelcomePrompt(string $phone): bool
     {
-        return $this->greetingFlow->sendWelcomePrompt($phone);
+        $greetingFlow = App::make(GreetingFlow::class);
+        return $greetingFlow->sendWelcomePrompt($phone);
     }
 
     private function normalizeCartItems(array $items): array
@@ -802,12 +803,17 @@ class CheckoutFlow
 
         // Gera token público de checkout
         $publicToken = \Str::random(32);
-        $rawPayload = ['cart' => $cart, 'customer' => $customer, 'checkout' => ['public_token' => $publicToken]];
+        $rawPayload = [
+            'cart' => $cart,
+            'customer' => $customer,
+            'checkout' => ['public_token' => $publicToken],
+            'order_code' => $orderCode
+        ];
 
         Log::info('Creating order with code '.$orderCode, ['store' => $store?->toArray()]);
 
         $order = Order::query()->create([
-            'code'             => strtoupper(Str::random(6)),
+            'code'             => $orderCode,
             'code_confirm'     => strtoupper(Str::random(5)),
             'user_id'          => $customerUser?->id,
             'company_id'       => $store?->company_id,
@@ -856,6 +862,18 @@ class CheckoutFlow
             $state['last_checkout_amount'] = $total;
             $state['last_checkout_at']     = now()->toIso8601String();
             $state['last_payment_link']    = $paymentLink;
+            
+            // Save active order for re-entry protection
+            $state['active_order'] = [
+                'order_id' => $order->id,
+                'order_code' => $orderCode,
+                'status' => 'pending',
+                'payment_status' => 'pending',
+                'payment_link' => $paymentLink,
+                'created_at' => now()->toIso8601String(),
+                'cart_snapshot' => $cart // Preserve cart snapshot for potential reuse
+            ];
+            
             $state['cart']                 = ['store_id' => $storeId, 'items' => []];
             $state['checkout_step']        = '';
             $this->saveFlowState($phone, $state);
@@ -873,9 +891,9 @@ class CheckoutFlow
 
     private function buildPaymentLink(string $phone, string $storeId, array $items, float $total, ?string $orderCode = null): string
     {
-        $base = trim((string) config('services.zapi.payment_base_url', 'http://localhost:5173/checkout'));
+        $base = trim((string) config('services.zapi.payment_base_url', 'https://localhost:5173/checkout'));
         if ($base === '') {
-            $base = 'http://localhost:5173/checkout';
+            $base = 'https://localhost:5173/checkout';
         }
 
         // Busca o pedido pelo código
@@ -954,5 +972,142 @@ class CheckoutFlow
                 'is_primary' => true,
             ]
         );
+    }
+
+    /**
+     * Check if user has active order and redirect accordingly
+     * Returns true if redirected, false if no active order
+     */
+    public function checkActiveOrderRedirect(string $phone): bool
+    {
+        $state = $this->flow->getState($phone);
+        
+        if (empty($state['active_order'])) {
+            return false; // No active order, normal flow
+        }
+        
+        $orderData = $state['active_order'];
+        $order = Order::find($orderData['order_id']);
+        
+        if (!$order) {
+            // Order doesn't exist anymore, clear state
+            unset($state['active_order']);
+            $this->saveFlowState($phone, $state);
+            return false;
+        }
+        
+        // Check order status and redirect
+        if ($order->status === 'pending' && $order->payment_status !== 'paid') {
+            // Pending payment order
+            return $this->sendPendingOrderMessage($phone, $order, $orderData['payment_link']);
+        } elseif ($order->status === 'pending' && $order->payment_status === 'paid') {
+            // Paid order, being prepared
+            return $this->sendPaidOrderMessage($phone, $order);
+        } elseif (in_array($order->status, ['preparing', 'delivering'])) {
+            // Order in progress
+            return $this->sendInProgressOrderMessage($phone, $order);
+        } elseif (in_array($order->status, ['done', 'delivered', 'cancelled'])) {
+            // Order completed or cancelled, clear active order
+            unset($state['active_order']);
+            $this->saveFlowState($phone, $state);
+            return false;
+        }
+        
+        return false;
+    }
+
+    /**
+     * Send message for pending payment order
+     */
+    private function sendPendingOrderMessage(string $phone, Order $order, string $paymentLink): bool
+    {
+        $message = "📋 *Você tem um pedido pendente!*\n\n";
+        $message .= "🧾 Pedido: #{$order->code}\n";
+        $message .= "💰 Valor: R$ " . number_format($order->total, 2, ',', '.') . "\n";
+        $message .= "⏰ Criado: " . $order->created_at->format('d/m H:i') . "\n\n";
+        $message .= "Deseja finalizar este pedido ou fazer um novo?";
+        
+        $buttons = [
+            ['id' => 'order_resume_' . $order->id, 'label' => '🔗 Retomar Pagamento'],
+            ['id' => 'order_new_' . $order->id, 'label' => '🛒 Fazer Novo Pedido'],
+            ['id' => 'order_cancel_' . $order->id, 'label' => '❌ Cancelar Pedido'],
+        ];
+        
+        try {
+            $this->zapiClient->sendButtonActions($phone, $message, $buttons);
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send pending order message', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    /**
+     * Send message for paid order (being prepared)
+     */
+    private function sendPaidOrderMessage(string $phone, Order $order): bool
+    {
+        $message = "🎉 *Seu pedido está sendo preparado!*\n\n";
+        $message .= "🧾 Pedido: #{$order->code}\n";
+        $message .= "💰 Valor pago: R$ " . number_format($order->total, 2, ',', '.') . "\n";
+        $message .= "⏰ Status: " . $this->getStatusDescription($order->status) . "\n\n";
+        $message .= "Seu pedido já está na cozinha! Em breve estará a caminho. 🍔🛵";
+        
+        try {
+            $this->zapiClient->sendText($phone, $message);
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send paid order message', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    /**
+     * Send message for order in progress (preparing or delivering)
+     */
+    private function sendInProgressOrderMessage(string $phone, Order $order): bool
+    {
+        $statusMap = [
+            'preparing' => '🏃‍♂️ Em preparação',
+            'delivering' => '🛵 Saiu para entrega',
+        ];
+        
+        $statusDesc = $statusMap[$order->status] ?? 'Em andamento';
+        
+        $message = "📦 *Seu pedido está a caminho!*\n\n";
+        $message .= "🧾 Pedido: #{$order->code}\n";
+        $message .= "📍 Status: {$statusDesc}\n";
+        
+        if ($order->status === 'delivering' && $order->courier) {
+            $message .= "🚚 Entregador: " . $order->courier->name . "\n";
+        }
+        
+        $message .= "\nAcompanhe pelo painel ou aguarde a chegada!";
+        
+        try {
+            $this->zapiClient->sendText($phone, $message);
+            return true;
+        } catch (\Throwable $e) {
+            Log::error('Failed to send in-progress order message', ['error' => $e->getMessage()]);
+            return false;
+        }
+    }
+
+    /**
+     * Get human-readable status description
+     */
+    private function getStatusDescription(string $status): string
+    {
+        $descriptions = [
+            'pending' => '⏳ Aguardando pagamento',
+            'accepted' => '✅ Aceito pela loja',
+            'preparing' => '👨‍🍳 Em preparação',
+            'preparToDelivery' => '📦 Pronto para entrega',
+            'delivering' => '🛵 Saiu para entrega',
+            'done' => '🎉 Entregue',
+            'cancelled' => '❌ Cancelado',
+        ];
+        
+        return $descriptions[$status] ?? $status;
     }
 }

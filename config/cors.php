@@ -6,10 +6,10 @@ return [
     'allowed_methods' => ['*'],
 
     'allowed_origins' => [
-        env('FRONTEND_URL', 'http://localhost:5173'),
-        'http://localhost:5173',
-        'http://localhost:5174',
-        'http://localhost:8080',
+        env('FRONTEND_URL', 'https://localhost:5173'),
+        'https://localhost:5173',
+        'https://localhost:5174',
+        'https://localhost:8080',
     ],
 
     'allowed_origins_patterns' => [],

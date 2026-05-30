@@ -19,12 +19,23 @@ class PublicCheckoutController extends Controller
             'input_token' => $request->input('token'),
             'header_token' => $request->header('X-Checkout-Token'),
         ]);
-        
+
         if ($response = $this->ensureAuthorized($order, $request)) {
             return $response;
         }
 
         $order->loadMissing(['store', 'user']);
+
+        $user = $order->user;
+
+        Logger()->info('Dados do usuário associado ao pedido', [
+            $order
+        ]);
+        $wallet = \App\Models\Wallet::where('company_id', $order->company_id)->first();
+
+        Logger()->info('Dados da carteira da empresa', [
+            'wallet' => $wallet ? $wallet->toArray() : null
+        ]);
 
         return response()->json([
             'order' => [
@@ -38,22 +49,40 @@ class PublicCheckoutController extends Controller
                 'total' => (float) $order->total,
                 'notes' => $order->notes,
                 'ordered_at' => optional($order->ordered_at)?->toIso8601String(),
-                'items' => $this->serializeItems($order),
+                'items' => collect(data_get($order->raw_payload, 'cart.items', []))->map(function ($item) {
+                    // Vamos no banco buscar apenas esse produto
+                    $product = \App\Models\Product::find(data_get($item, 'product_id'));
+
+                    return [
+                        'id' => data_get($item, 'product_id'),
+                        'name' => data_get($item, 'product_name'),
+                        'quantity' => data_get($item, 'quantity'),
+                        'price' => (float) data_get($item, 'base_price'),
+
+                        // AQUI: Pegamos a imagem do banco, ou retornamos null se der ruim
+                        'image' => $product ? $product->image_path : null,
+
+                        'options' => data_get($item, 'variation_name'),
+                    ];
+                })->values()->all()
             ],
             'store' => [
-                'logo' => $order->store?->logo_url,
-                'name' => $order->store?->name,
-                'slug' => $order->store?->slug,
-            ],
+                                                'logo' => $order->store?->logo_url,
+                                                'name' => $order->store?->name,
+                                                'slug' => $order->store?->slug,
+                                            ],
             'customer' => [
-                'name' => $order->user?->name,
-                'email' => $order->user?->email,
-                'number' => $order->user?->phone_number,
+                'name' => data_get($order->raw_payload, 'customer.name', $order->user?->name),
+                'email' => data_get($order->raw_payload, 'customer.email', $order->user?->email),
+                'whatsapp' => data_get($order->raw_payload, 'customer.phone', $order->user?->phone),
+                // Puxa a string do endereço direto como o bot salvou:
+                'address' => data_get($order->raw_payload, 'customer.address'),
             ],
             'checkout' => [
                 'can_pay' => ! in_array($order->payment_status, ['paid', 'approved'], true),
                 'source' => data_get($order->raw_payload, 'checkout.source', 'web'),
                 'delivery_mode' => data_get($order->raw_payload, 'checkout.delivery_mode', 'store'),
+                'mp_public_key' => $wallet ? $wallet->mp_public_key : env('VITE_MP_PUBLIC_KEY'),
             ],
             'payment_methods' => ['pix', 'card'],
         ], 200, ['Content-Type' => 'application/json']);
