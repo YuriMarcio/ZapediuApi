@@ -36,13 +36,22 @@ return [
     ],
 
     'whatsapp' => [
+        // 'zapi' fala direto com a Z-API (App\Services\Zapi\ZapiClient). 'flowbridge' passa a
+        // falar com o gateway FlowBridge (App\Services\Whatsapp\FlowBridgeClient), que por
+        // baixo pode estar configurado para Evolution API, Z-API ou Meta Cloud API — ver
+        // https://github.com/YuriMarcio/Zap-Conection. Trocar aqui não muda nenhum call site,
+        // só o binding de WhatsAppClientInterface em AppServiceProvider.
         'provider' => env('WHATSAPP_PROVIDER', 'zapi'),
     ],
 
-    'evolution' => [
-        'base_url' => env('EVOLUTION_API_URL'),
-        'api_key' => env('EVOLUTION_API_KEY'),
-        'instance' => env('EVOLUTION_INSTANCE_NAME', 'default'),
+    'flowbridge' => [
+        'base_url' => env('FLOWBRIDGE_API_URL'),
+        'api_key' => env('FLOWBRIDGE_API_KEY'),
+        'instance_id' => env('FLOWBRIDGE_INSTANCE_ID'),
+        'timeout' => (int) env('FLOWBRIDGE_TIMEOUT', 15),
+        // Token no path de /api/webhooks/flowbridge/{token} — o FlowBridge não assina o POST
+        // que manda pro callbackUrl, então esse token é a única barreira contra spoofing.
+        'webhook_secret' => env('FLOWBRIDGE_WEBHOOK_SECRET'),
     ],
 
     'mercadopago' => [

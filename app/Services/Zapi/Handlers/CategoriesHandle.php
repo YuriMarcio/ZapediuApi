@@ -6,7 +6,7 @@ use App\Models\Category;
 use App\Models\Store;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\StoreSearch;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Log;
 
 class CategoriesHandle
@@ -14,7 +14,7 @@ class CategoriesHandle
     public function __construct(
         private FlowManager $flow,
         private StoreSearch $search,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         // Injetando StoreHandle para resolver o problema 4
         private StoreHandle $storeHandle
     ) {

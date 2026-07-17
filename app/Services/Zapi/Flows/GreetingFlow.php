@@ -2,7 +2,7 @@
 
 namespace App\Services\Zapi\Flows;
 
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Flows\CheckoutFlow;
 use App\Services\Zapi\Support\StoreSearch;
@@ -13,7 +13,7 @@ use Illuminate\Support\Facades\App;
 class GreetingFlow
 {
     public function __construct(
-        private readonly ZapiClient $zapiClient,
+        private readonly WhatsAppClientInterface $zapiClient,
         private readonly FlowManager $flow,
         private readonly StoreSearch $search,
         private readonly StoreHandle $storeHandle,

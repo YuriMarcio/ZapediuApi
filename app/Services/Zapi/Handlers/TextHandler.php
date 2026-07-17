@@ -7,7 +7,7 @@ use App\Services\Zapi\Flows\GreetingFlow;
 use App\Services\Zapi\Flows\CheckoutFlow;
 use App\Services\Zapi\Handlers\CategoriesHandle;
 use App\Services\Zapi\Handlers\StoreHandle;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Log;
 
 class TextHandler
@@ -16,7 +16,7 @@ class TextHandler
         private FlowManager $flow,
         private GreetingFlow $greetingFlow,
         private StoreHandle $storeHandle,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         private CheckoutFlow $checkoutFlow,
         private CategoriesHandle $categoriesHandle
 

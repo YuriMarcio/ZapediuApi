@@ -3,7 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Http\Request;
 use Symfony\Component\HttpFoundation\Response;
 
@@ -12,7 +12,7 @@ class ZapiSendTextController extends Controller
     /**
      * Handle the incoming request.
      */
-    public function __invoke(Request $request, ZapiClient $client)
+    public function __invoke(Request $request, WhatsAppClientInterface $client)
     {
         $expectedToken = (string) config('services.zapi.webhook_token');
 

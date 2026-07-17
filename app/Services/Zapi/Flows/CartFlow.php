@@ -10,7 +10,7 @@ use App\Models\User;
 use App\Models\UserPhone;
 use App\Models\UserAddress;
 use App\Jobs\Whatsapp\SendCartFeedbackJob; // Importando o Job
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -21,7 +21,7 @@ class CartFlow
     // Propriedades definidas (Problema 1)
     public function __construct(
         private FlowManager $flow,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         private StoreHandle $storeHandle
     ) {
     }

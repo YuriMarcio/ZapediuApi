@@ -158,7 +158,7 @@ class PaymentWebhookController extends Controller
             ."Obrigado por pediu na *{$storeName}*! 🙏";
 
         try {
-            app(\App\Services\Zapi\ZapiClient::class)->sendText($customerPhone, $message);
+            app(\App\Services\Whatsapp\WhatsAppClientInterface::class)->sendText($customerPhone, $message);
         } catch (\Throwable $exception) {
             Log::warning('PaymentWebhook: failed to send WhatsApp confirmation.', [
                 'order_code' => $reference,

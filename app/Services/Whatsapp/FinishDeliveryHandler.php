@@ -3,7 +3,7 @@
 namespace App\Services\Whatsapp;
 
 use App\Models\Order;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +15,7 @@ class FinishDeliveryHandler
     ) {
     }
 
-    public function handle(string $driverPhone, int $orderId, string $typedCode, ZapiClient $zapi): void
+    public function handle(string $driverPhone, int $orderId, string $typedCode, WhatsAppClientInterface $zapi): void
     {
         $order = Order::find($orderId);
 
@@ -54,7 +54,7 @@ class FinishDeliveryHandler
     /**
      * Reset customer session and send thank you message
      */
-    private function resetCustomerSession(Order $order, ZapiClient $zapi): void
+    private function resetCustomerSession(Order $order, WhatsAppClientInterface $zapi): void
     {
         try {
             // Get customer phone from order

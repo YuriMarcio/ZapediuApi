@@ -6,12 +6,12 @@ use App\DataTransferObjects\Whatsapp\CarouselProductCardData;
 use App\Jobs\Whatsapp\SendCarouselMessageJob;
 use App\Jobs\Whatsapp\SendStatusNotificationJob;
 use App\Models\Company;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Str;
 
 class WhatsAppOrchestrator
 {
-    public function __construct(private readonly ZapiClient $zapiClient)
+    public function __construct(private readonly WhatsAppClientInterface $zapiClient)
     {
     }
 

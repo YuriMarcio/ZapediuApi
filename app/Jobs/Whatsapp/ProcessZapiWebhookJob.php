@@ -6,7 +6,7 @@ use App\Actions\Webhooks\ProcessIncomingWebhookAction;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use App\Services\Whatsapp\AcceptDeliveryHandler;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Log;
 
 class ProcessZapiWebhookJob implements ShouldQueue
@@ -22,7 +22,7 @@ class ProcessZapiWebhookJob implements ShouldQueue
     ) {
     }
 
-    public function handle(ProcessIncomingWebhookAction $action, ZapiClient $zapi): void
+    public function handle(ProcessIncomingWebhookAction $action, WhatsAppClientInterface $zapi): void
     {
         // Pega o número real do motoboy
         $buttonId = $this->payload['buttonReply']['id'] ?? null;

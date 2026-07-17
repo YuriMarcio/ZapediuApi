@@ -100,7 +100,7 @@ class TestMercadoPagoWebhook extends Command
                 $this->line("   MP Payment ID: {$order->mp_payment_id}");
                 $this->line("   MP Payment Status: {$order->mp_payment_status}");
 
-            } catch (\Exception $e) {
+            } catch (\Throwable $e) {
                 $this->error("❌ Erro ao processar webhook: " . $e->getMessage());
                 Log::error('TestMercadoPagoWebhook: Failed to process', [
                     'error' => $e->getMessage(),

@@ -2,11 +2,12 @@
 
 namespace App\Services\Zapi;
 
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
-class ZapiClient
+class ZapiClient implements WhatsAppClientInterface
 {
     public function sendText(string $phone, string $message): array
     {

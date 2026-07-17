@@ -7,7 +7,7 @@ use App\Models\Store;
 use App\Models\User;
 use App\Models\UserAddress;
 use App\Models\UserPhone;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\App;
 use Illuminate\Support\Facades\Log;
@@ -19,7 +19,7 @@ class CheckoutFlow
     // 1. Construtor com injeção de dependências
     public function __construct(
         private FlowManager $flow,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
     ) {
     }
 

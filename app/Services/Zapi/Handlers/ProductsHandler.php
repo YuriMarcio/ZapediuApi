@@ -7,7 +7,7 @@ use App\Models\Product;
 use App\Models\ProductVariation;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\StoreSearch;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Builders\ProductCarouselBuilder; // Injetando o Builder
 use Illuminate\Support\Facades\Log;
 
@@ -19,7 +19,7 @@ class ProductsHandler
     public function __construct(
         private FlowManager $flow,
         private StoreSearch $search,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         private ProductCarouselBuilder $carouselBuilder // Injeção do Builder
     ) {
     }

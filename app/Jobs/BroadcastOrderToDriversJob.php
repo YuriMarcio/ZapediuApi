@@ -2,7 +2,7 @@
 
 namespace App\Jobs;
 
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Models\Order;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -26,7 +26,7 @@ class BroadcastOrderToDriversJob implements ShouldQueue
         $this->order = $order;
     }
 
-    public function handle(ZapiClient $zapi): void
+    public function handle(WhatsAppClientInterface $zapi): void
     {
         $groupJid = config('services.zapi.drivers_group_jid');
 

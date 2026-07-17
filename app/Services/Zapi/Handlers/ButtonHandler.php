@@ -2,7 +2,7 @@
 
 namespace App\Services\Zapi\Handlers;
 
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Flows\GreetingFlow;
 use App\Services\Zapi\Flows\CartFlow;
@@ -19,7 +19,7 @@ class ButtonHandler
     public function __construct(
         private FlowManager $flow,
         private GreetingFlow $greetingFlow,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         private CartFlow $cartFlow,
         private CheckoutFlow $checkoutFlow,
         private StoreHandle $storeHandle,

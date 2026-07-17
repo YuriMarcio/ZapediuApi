@@ -3,7 +3,7 @@
 namespace App\Services\Whatsapp;
 
 use App\Models\Order;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -11,7 +11,7 @@ use Illuminate\Support\Facades\Http;
 
 class AcceptDeliveryHandler
 {
-    public function handle(string $driverPhone, string $buttonId, ZapiClient $zapi, string $driverName = 'Um entregador'): void
+    public function handle(string $driverPhone, string $buttonId, WhatsAppClientInterface $zapi, string $driverName = 'Um entregador'): void
     {
         Log::info("🟢 Motoboy {$driverName} ({$driverPhone}) tentou aceitar: {$buttonId}");
 
@@ -23,7 +23,7 @@ class AcceptDeliveryHandler
         }
     }
 
-    private function processOrderAcceptance(string $driverPhone, int $orderId, ZapiClient $zapi, string $driverName): void
+    private function processOrderAcceptance(string $driverPhone, int $orderId, WhatsAppClientInterface $zapi, string $driverName): void
     {
         $lockKey = "lock:order:{$orderId}:{$driverPhone}";
 

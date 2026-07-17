@@ -6,7 +6,7 @@ use App\Models\Store;
 use App\Services\Zapi\Builders\StoreCarouselBuilder;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\StoreSearch;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
@@ -18,7 +18,7 @@ class StoreHandle
     public function __construct(
         private FlowManager $flow,
         private StoreSearch $search,
-        private ZapiClient $zapiClient,
+        private WhatsAppClientInterface $zapiClient,
         private StoreCarouselBuilder $carouselBuilder
     ) {
     }
