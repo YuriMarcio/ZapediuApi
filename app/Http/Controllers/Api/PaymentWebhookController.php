@@ -137,15 +137,13 @@ class PaymentWebhookController extends Controller
             return response()->json(['ok' => true, 'notified' => false]);
         }
 
-        // Configure Z-API credentials from the order's company
+        // Configure FlowBridge credentials from the order's company
         if ($order->company_id) {
             /** @var \App\Models\Company|null $company */
             $company = \App\Models\Company::query()->find($order->company_id);
 
-            if ($company !== null) {
-                if ($company->zapi_instance_id)    { config()->set('services.zapi.instance_id',    $company->zapi_instance_id); }
-                if ($company->zapi_instance_token) { config()->set('services.zapi.instance_token', $company->zapi_instance_token); }
-                if ($company->zapi_client_token)   { config()->set('services.zapi.client_token',   $company->zapi_client_token); }
+            if ($company !== null && $company->flowbridge_instance_id) {
+                config()->set('services.flowbridge.instance_id', $company->flowbridge_instance_id);
             }
         }
 

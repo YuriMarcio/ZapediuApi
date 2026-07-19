@@ -35,15 +35,6 @@ return [
         ],
     ],
 
-    'whatsapp' => [
-        // 'zapi' fala direto com a Z-API (App\Services\Zapi\ZapiClient). 'flowbridge' passa a
-        // falar com o gateway FlowBridge (App\Services\Whatsapp\FlowBridgeClient), que por
-        // baixo pode estar configurado para Evolution API, Z-API ou Meta Cloud API — ver
-        // https://github.com/YuriMarcio/Zap-Conection. Trocar aqui não muda nenhum call site,
-        // só o binding de WhatsAppClientInterface em AppServiceProvider.
-        'provider' => env('WHATSAPP_PROVIDER', 'zapi'),
-    ],
-
     'flowbridge' => [
         'base_url' => env('FLOWBRIDGE_API_URL'),
         'api_key' => env('FLOWBRIDGE_API_KEY'),
@@ -70,12 +61,10 @@ return [
     'maps_key' => env('GOOGLE_MAPS_API_KEY'),
 ],
 
+    // Chaves de copy/config do motor de fluxo do chatbot (mensagens, paginação, grupo de
+    // entregadores etc.) — agnósticas de provedor de transporte. Mantido o nome histórico
+    // "zapi" para não inflar o diff da migração pra FlowBridge; ver App\Services\Zapi\*.
     'zapi' => [
-        'base_url' => env('ZAPI_BASE_URL', 'https://api.z-api.io'),
-        'instance_id' => env('ZAPI_INSTANCE_ID'),
-        'instance_token' => env('ZAPI_INSTANCE_TOKEN', env('ZAPI_TOKEN')),
-        'client_token' => env('ZAPI_CLIENT_TOKEN'),
-        'webhook_token' => env('ZAPI_WEBHOOK_TOKEN'),
         'auto_reply_enabled' => (bool) env('ZAPI_AUTO_REPLY_ENABLED', true),
         'carousel_enabled' => (bool) env('ZAPI_CAROUSEL_ENABLED', true),
         'carousel_intro' => env('ZAPI_CAROUSEL_INTRO', 'Confira nosso cardapio e escolha seu favorito:'),
@@ -86,13 +75,7 @@ return [
         'list_button_text' => env('ZAPI_LIST_BUTTON_TEXT', 'Ver Cardapio'),
         'list_title' => env('ZAPI_LIST_TITLE', 'Categorias Disponiveis'),
         'list_description' => env('ZAPI_LIST_DESCRIPTION', 'Clique no botao abaixo para navegar.'),
-        'catalog_phone' => env('ZAPI_CATALOG_PHONE'),
-        'catalog_translation' => env('ZAPI_CATALOG_TRANSLATION', 'PT'),
         'drivers_group_jid' => env('ZAPI_DRIVERS_GROUP_JID'),
-        'catalog_message' => env('ZAPI_CATALOG_MESSAGE', 'Acesse nosso catalogo no WhatsApp:'),
-        'catalog_title' => env('ZAPI_CATALOG_TITLE', 'Catalogo de produtos'),
-        'catalog_description' => env('ZAPI_CATALOG_DESCRIPTION', 'Toque para visualizar nossos produtos.'),
-        'product_id' => env('ZAPI_PRODUCT_ID'),
         'flow_welcome_message' => env('ZAPI_FLOW_WELCOME_MESSAGE', 'Ola, digite o que procura ou digite filtro.'),
         'flow_state_ttl_minutes' => (int) env('ZAPI_FLOW_STATE_TTL_MINUTES', 180),
         'flow_more_image' => env('ZAPI_FLOW_MORE_IMAGE', 'https://picsum.photos/seed/mais-lojas/600/600'),

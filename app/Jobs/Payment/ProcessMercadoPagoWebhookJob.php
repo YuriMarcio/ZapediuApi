@@ -3,7 +3,6 @@
 namespace App\Jobs\Payment;
 
 use App\Models\Order;
-use App\Models\Company;
 use App\Models\Wallet;
 use App\Services\Payment\MercadoPagoPaymentService;
 use App\Services\Whatsapp\WhatsAppOrchestrator;
@@ -318,18 +317,8 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
         $message .= "Obrigado por escolher a *{$storeName}*! 🙏";
 
         try {
-            // Configurar credenciais Z-API da company
-            if ($order->company_id) {
-                $company = Company::find($order->company_id);
-
-                if ($company) {
-                    config()->set('services.zapi.instance_id', $company->zapi_instance_id ?: config('services.zapi.instance_id'));
-                    config()->set('services.zapi.instance_token', $company->zapi_instance_token ?: config('services.zapi.instance_token'));
-                    config()->set('services.zapi.client_token', $company->zapi_client_token ?: config('services.zapi.client_token'));
-                }
-            }
-
-            // Enviar mensagem
+            // WhatsAppOrchestrator::sendStatusNotificationNow já troca a credencial FlowBridge
+            // pela da company antes de enviar (swapCompanyConfig).
             $whatsappOrchestrator->sendStatusNotificationNow(
                 $order->company_id ?? 0,
                 $customerPhone,

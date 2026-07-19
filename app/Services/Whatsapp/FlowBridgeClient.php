@@ -2,27 +2,18 @@
 
 namespace App\Services\Whatsapp;
 
-use App\Services\Zapi\ZapiClient;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
 
 /**
- * Fala com o FlowBridge (github.com/YuriMarcio/Zap-Conection) em vez de bater direto na
- * Z-API. O FlowBridge é um gateway HTTP que normaliza Evolution API, Z-API e Meta Cloud API
- * atrás de uma única rota de mensagens (POST /v1/instances/{id}/messages/{type}) — qual
+ * Fala com o FlowBridge (github.com/YuriMarcio/Zap-Conection), único provedor de WhatsApp da
+ * aplicação. O FlowBridge é um gateway HTTP que normaliza Evolution API, Z-API e Meta Cloud
+ * API atrás de uma única rota de mensagens (POST /v1/instances/{id}/messages/{type}) — qual
  * provider está por baixo é configuração do lado do FlowBridge, não deste client.
- *
- * sendCatalog/sendProduct não têm equivalente em nenhum provider do FlowBridge (catálogo do
- * WhatsApp é recurso exclusivo da Z-API), então essas duas chamadas continuam indo direto
- * para a Z-API via $catalogFallback.
  */
 class FlowBridgeClient implements WhatsAppClientInterface
 {
-    public function __construct(private readonly ZapiClient $catalogFallback)
-    {
-    }
-
     public function sendText(string $phone, string $message): array
     {
         return $this->sendMessage('text', $phone, ['text' => $message]);
@@ -83,16 +74,6 @@ class FlowBridgeClient implements WhatsAppClientInterface
                 'cards' => $cards,
             ],
         ]);
-    }
-
-    public function sendCatalog(string $phone, string $catalogPhone, array $options = []): array
-    {
-        return $this->catalogFallback->sendCatalog($phone, $catalogPhone, $options);
-    }
-
-    public function sendProduct(string $phone, string $catalogPhone, string $productId): array
-    {
-        return $this->catalogFallback->sendProduct($phone, $catalogPhone, $productId);
     }
 
     /**

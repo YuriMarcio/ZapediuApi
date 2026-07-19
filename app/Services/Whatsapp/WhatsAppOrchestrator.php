@@ -69,8 +69,6 @@ class WhatsAppOrchestrator
 
     private function swapCompanyConfig(Company $company): void
     {
-        config()->set('services.zapi.instance_id', $company->zapi_instance_id ?: config('services.zapi.instance_id'));
-        config()->set('services.zapi.instance_token', $company->zapi_instance_token ?: config('services.zapi.instance_token'));
-        config()->set('services.zapi.client_token', $company->zapi_client_token ?: config('services.zapi.client_token'));
+        config()->set('services.flowbridge.instance_id', $company->flowbridge_instance_id ?: config('services.flowbridge.instance_id'));
     }
 }

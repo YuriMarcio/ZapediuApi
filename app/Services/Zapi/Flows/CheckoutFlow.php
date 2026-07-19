@@ -50,6 +50,8 @@ class CheckoutFlow
             'product_name' => $item['product_name'] ?? 'Produto',
             'base_price' => (float) ($item['base_price'] ?? 0),
             'additional_price' => (float) ($item['additional_price'] ?? 0),
+            'customizations' => is_array($item['customizations'] ?? null) ? $item['customizations'] : [],
+            'customizations_total' => (float) ($item['customizations_total'] ?? 0),
             'quantity' => (int) ($item['quantity'] ?? 1),
             'variation_name' => $item['variation_name'] ?? null,
             'observation' => $item['observation'] ?? null,
@@ -655,10 +657,13 @@ class CheckoutFlow
         $itemLines = [];
 
         foreach ($items as $item) {
-            $lineTotal    = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $lineTotal    = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
             $subtotal    += $lineTotal;
             $label        = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
             $line         = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            foreach ($item['customizations'] as $customization) {
+                $line .= "\n   ➕ ".($customization['label'] ?? '');
+            }
             if ($item['observation']) {
                 $line .= "\n   📝 ".$item['observation'];
             }
@@ -772,7 +777,7 @@ class CheckoutFlow
         $items = $this->normalizeCartItems($cart['items']);
         $subtotal = 0.0;
         foreach ($items as $item) {
-            $subtotal += ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $subtotal += ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
         }
         $deliveryFee = $store instanceof Store ? $this->buildStoreDeliveryFee($store) : 0.0;
         $total = $subtotal + $deliveryFee;
@@ -913,33 +918,6 @@ class CheckoutFlow
         // Monta o link amigável
         $orderCodePath = $orderCode ?? \Str::ulid()->toBase32();
         return rtrim($base, '/') . '/' . $orderCodePath . '?token=' . $token;
-    }
-
-    private function sendCatalogResponse(string $phone): bool
-    {
-        $catalogPhone = trim((string) config('services.zapi.catalog_phone'));
-
-        if ($catalogPhone === '') {
-            return false;
-        }
-
-        try {
-            $this->zapiClient->sendCatalog($phone, $catalogPhone, [
-                'translation' => (string) config('services.zapi.catalog_translation'),
-                'message' => (string) config('services.zapi.catalog_message'),
-                'title' => (string) config('services.zapi.catalog_title'),
-                'catalogDescription' => (string) config('services.zapi.catalog_description'),
-            ]);
-
-            return true;
-        } catch (\Throwable $exception) {
-            Log::warning('Failed to send Z-API catalog response.', [
-                'phone' => $phone,
-                'error' => $exception->getMessage(),
-            ]);
-
-            return false;
-        }
     }
 
     private function syncUserPhone(?User $user, string $phone): void

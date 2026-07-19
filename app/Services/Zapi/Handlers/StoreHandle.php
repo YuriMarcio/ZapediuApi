@@ -280,8 +280,8 @@ class StoreHandle
                 'image' => $product->image_url ?? 'https://picsum.photos/seed/'.$product->slug.'/600/600',
                 'buttons' => [
                     [
-                        'id' => 'view_product_'.$product->slug,
-                        'label' => 'Ver detalhes',
+                        'id' => 'flow_add1_'.$storeSlug.'_'.(int) $product->id,
+                        'label' => '➕ Adicionar',
                         'type' => 'REPLY',
                     ],
                 ],

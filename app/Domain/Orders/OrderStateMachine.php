@@ -31,7 +31,11 @@ class OrderStateMachine
     {
         return match ($value) {
             'accepted' => new ConfirmedOrderState(),
-            'preparing' => new PreparingOrderState(),
+            // 'preparToDelivery' (App\Enums\OrderStatus::PreparToDelivery) é setado quando a
+            // loja termina o preparo e o pedido é transmitido pro grupo de entregadores
+            // (App\Observers\OrderObserver); a única transição válida a partir daí é pra
+            // 'delivering' (motoboy aceita) ou 'cancelled' — mesmo conjunto de 'preparing'.
+            'preparing', 'preparToDelivery' => new PreparingOrderState(),
             'delivering' => new OutForDeliveryOrderState(),
             'done' => new DeliveredOrderState(),
             'cancelled' => new CancelledOrderState(),

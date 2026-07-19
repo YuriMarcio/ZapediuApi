@@ -25,6 +25,8 @@ class Company extends Model
         'zapi_instance_token',
         'zapi_client_token',
         'zapi_webhook_token',
+        'flowbridge_instance_id',
+        'flowbridge_webhook_secret',
         'shipping_rules',
         'business_hours',
         'settings',

@@ -6,11 +6,16 @@ namespace App\Services\Zapi\Flows;
 use App\Models\Store;
 use App\Models\Product;
 use App\Models\ProductVariation;
+use App\Models\OptionalFlow;
+use App\Models\OptionalFlowStep;
+use App\Models\OptionalFlowStepOption;
 use App\Models\User;
 use App\Models\UserPhone;
 use App\Models\UserAddress;
+use App\Jobs\Whatsapp\AdvanceCustomizationStepJob;
 use App\Jobs\Whatsapp\SendCartFeedbackJob; // Importando o Job
 use App\Services\Whatsapp\WhatsAppClientInterface;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
@@ -125,8 +130,9 @@ class CartFlow
             ->values();
 
         if ($variations->isEmpty() || ! (bool) $product->has_variations) {
-            // No variations: commit immediately with the chosen quantity
-            return $this->commitAndSendFeedback($phone, $storeId, (int) $productId, null, null, 0.0, $quantity);
+            // No variations: go through the customization engine (adicionais/etc.), which
+            // commits immediately if the product has no OptionalFlow steps assigned.
+            return $this->beginCustomizationOrCommit($phone, $storeId, (int) $productId, null, null, 0.0, $quantity);
         }
 
         // Has variations: store quantity in pending_add and ask the customer to choose
@@ -183,7 +189,7 @@ class CartFlow
         unset($state['pending_add']);
         $this->saveFlowState($phone, $state);
 
-        return $this->commitAndSendFeedback(
+        return $this->beginCustomizationOrCommit(
             $phone,
             (string) ($pending['store_id'] ?? ''),
             (int) ($pending['product_id'] ?? 0),
@@ -191,6 +197,346 @@ class CartFlow
             (string) $variation->name,
             (float) $variation->additional_price,
             $quantity
+        );
+    }
+
+    /**
+     * Depois de resolver a variação (ou se o produto não tem variação), decide se precisa
+     * andar pelo motor de customização (OptionalFlow/adicionais) antes de comitar a linha do
+     * carrinho, ou se pode comitar direto (produto sem nenhum OptionalFlow aplicável).
+     */
+    private function beginCustomizationOrCommit(
+        string $phone,
+        string $storeId,
+        int $productId,
+        ?int $variationId,
+        ?string $variationName,
+        float $variationAdditionalPrice,
+        int $quantity
+    ): bool {
+        $state = $this->getState($phone);
+        $cart = $state['cart'] ?? ['store_id' => null, 'items' => []];
+
+        if (($cart['store_id'] ?? null) !== null
+            && $cart['store_id'] !== $storeId
+            && is_array($cart['items'] ?? null)
+            && $cart['items'] !== []) {
+            return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, $productId);
+        }
+
+        $product = Product::query()->where('is_active', true)->find($productId);
+        $steps = $product !== null ? $this->resolveCustomizationSteps($product) : collect();
+
+        if ($steps->isEmpty()) {
+            return $this->commitAndSendFeedback($phone, $storeId, $productId, $variationId, $variationName, $variationAdditionalPrice, $quantity);
+        }
+
+        $state['pending_add'] = [
+            'store_id'                   => $storeId,
+            'product_id'                 => $productId,
+            'variation_id'               => $variationId,
+            'variation_name'             => $variationName,
+            'variation_additional_price' => $variationAdditionalPrice,
+            'quantity'                   => $quantity,
+            'flow_step_queue'            => $steps->pluck('id')->values()->all(),
+            'current_step_id'            => null,
+            'selections'                 => [],
+        ];
+        $this->saveFlowState($phone, $state);
+
+        return $this->advanceCustomizationStep($phone);
+    }
+
+    /**
+     * Steps de OptionalFlow aplicáveis ao produto (atribuídos direto a ele ou à categoria
+     * dele), na ordem de exibição, só com opções ativas.
+     */
+    private function resolveCustomizationSteps(Product $product): Collection
+    {
+        $flowIds = $product->optionalFlows()->where('is_active', true)->pluck('optional_flows.id')
+            ->merge(
+                OptionalFlow::query()
+                    ->where('is_active', true)
+                    ->when($product->category_id, fn ($q) => $q->whereHas('categories', fn ($q2) => $q2->whereKey($product->category_id)))
+                    ->pluck('id')
+            )->unique();
+
+        if ($flowIds->isEmpty()) {
+            return collect();
+        }
+
+        return OptionalFlowStep::query()
+            ->whereIn('optional_flow_id', $flowIds)
+            ->with(['options' => fn ($q) => $q->where('is_active', true)->orderBy('position')])
+            ->orderBy('position')
+            ->get()
+            ->filter(fn (OptionalFlowStep $step): bool => $step->options->isNotEmpty())
+            ->values();
+    }
+
+    /**
+     * Anda pra o próximo step da fila de customização, ou comita a linha do carrinho se a
+     * fila já acabou.
+     */
+    public function advanceCustomizationStep(string $phone): bool
+    {
+        $state = $this->getState($phone);
+        $pending = $state['pending_add'] ?? null;
+
+        if (! is_array($pending)) {
+            return false;
+        }
+
+        $queue = $pending['flow_step_queue'] ?? [];
+
+        if ($queue === []) {
+            return $this->commitPendingCustomization($phone, $state, $pending);
+        }
+
+        $stepId = (int) array_shift($queue);
+        $pending['flow_step_queue'] = $queue;
+        $pending['current_step_id'] = $stepId;
+        $state['pending_add'] = $pending;
+        $this->saveFlowState($phone, $state);
+
+        $step = OptionalFlowStep::query()
+            ->with(['options' => fn ($q) => $q->where('is_active', true)->orderBy('position')])
+            ->find($stepId);
+
+        if ($step === null || $step->options->isEmpty()) {
+            // Step sem opções ativas (mudou entre a query inicial e agora): pula.
+            return $this->advanceCustomizationStep($phone);
+        }
+
+        if ((int) $step->max_select <= 1) {
+            return $this->sendCustomizationOptionPrompt($phone, $step);
+        }
+
+        if (! (bool) $step->is_required) {
+            return $this->sendCustomizationAskPrompt($phone, $step);
+        }
+
+        return $this->sendCustomizationMultiSelectPrompt($phone, $step);
+    }
+
+    /**
+     * Step obrigatório de seleção única (ex.: tamanho): mesma regra de ≤3 botões / >3 lista
+     * já usada em sendVariationPrompt para variação de produto.
+     */
+    private function sendCustomizationOptionPrompt(string $phone, OptionalFlowStep $step): bool
+    {
+        $question = trim((string) ($step->customer_hint ?: $step->title));
+        $options = $step->options;
+
+        if ($options->count() > 3) {
+            $rows = $options->map(fn (OptionalFlowStepOption $option): array => [
+                'id'          => 'flow_custopt_'.$step->id.'_'.$option->id,
+                'title'       => (string) $option->title,
+                'description' => ((float) $option->price) > 0
+                    ? '+R$ '.number_format((float) $option->price, 2, ',', '.')
+                    : '',
+            ])->values()->all();
+
+            try {
+                $this->zapiClient->sendList($phone, $question, 'Ver opções', $step->title, '', $rows);
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send customization option list.', ['error' => $exception->getMessage()]);
+
+                return false;
+            }
+        }
+
+        $buttons = $options->map(fn (OptionalFlowStepOption $option): array => [
+            'id'    => 'flow_custopt_'.$step->id.'_'.$option->id,
+            'label' => $option->title.(
+                ((float) $option->price) > 0
+                    ? ' (+R$ '.number_format((float) $option->price, 2, ',', '.').')'
+                    : ''
+            ),
+        ])->values()->all();
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $question, $buttons);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send customization option buttons.', ['error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Step opcional de múltipla seleção (ex.: adicionais): pergunta primeiro se o cliente
+     * quer ver as opções (documento §6, Passo 1).
+     */
+    private function sendCustomizationAskPrompt(string $phone, OptionalFlowStep $step): bool
+    {
+        $message = trim((string) ($step->customer_hint ?: $step->title))."\nQuer colocar algum adicional?";
+
+        try {
+            $this->zapiClient->sendButtonActions($phone, $message, [
+                ['id' => 'flow_custask_'.$step->id, 'label' => '➕ Sim, quero adicionais'],
+                ['id' => 'flow_custskip_'.$step->id, 'label' => '🚫 Não, obrigado'],
+            ]);
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send customization ask prompt.', ['error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Lista interativa com seleção múltipla (documento §6, Passo 2): cada toque só registra
+     * a seleção, sem responder — a confirmação consolidada sai depois do debounce.
+     */
+    private function sendCustomizationMultiSelectPrompt(string $phone, OptionalFlowStep $step): bool
+    {
+        $rows = $step->options->map(fn (OptionalFlowStepOption $option): array => [
+            'id'          => 'flow_custopt_'.$step->id.'_'.$option->id,
+            'title'       => (string) $option->title,
+            'description' => ((float) $option->price) > 0
+                ? '+R$ '.number_format((float) $option->price, 2, ',', '.')
+                : '',
+        ])->values()->all();
+
+        try {
+            $this->zapiClient->sendList(
+                $phone,
+                '➕ Escolha os adicionais que quiser (pode marcar mais de um):',
+                'Ver adicionais',
+                $step->title,
+                '',
+                $rows
+            );
+
+            return true;
+        } catch (\Throwable $exception) {
+            Log::warning('Failed to send customization multi-select list.', ['error' => $exception->getMessage()]);
+
+            return false;
+        }
+    }
+
+    /**
+     * Botão "Sim, quero adicionais" / "Não, obrigado" do passo opcional de múltipla seleção.
+     */
+    public function confirmWantsCustomizationStep(string $phone, string $stepId, bool $wantsIt): bool
+    {
+        $state = $this->getState($phone);
+        $pending = $state['pending_add'] ?? null;
+
+        if (! is_array($pending) || (int) ($pending['current_step_id'] ?? 0) !== (int) $stepId) {
+            return false;
+        }
+
+        if (! $wantsIt) {
+            return $this->advanceCustomizationStep($phone);
+        }
+
+        $step = OptionalFlowStep::query()
+            ->with(['options' => fn ($q) => $q->where('is_active', true)->orderBy('position')])
+            ->find((int) $stepId);
+
+        if ($step === null || $step->options->isEmpty()) {
+            return $this->advanceCustomizationStep($phone);
+        }
+
+        return $this->sendCustomizationMultiSelectPrompt($phone, $step);
+    }
+
+    /**
+     * Toque numa opção de customização — tanto pra seleção única (avança na hora) quanto pra
+     * múltipla seleção (só registra e reinicia o debounce de 2-3s).
+     */
+    public function handleCustomizationOptionSelected(string $phone, string $stepId, string $optionId): bool
+    {
+        $state = $this->getState($phone);
+        $pending = $state['pending_add'] ?? null;
+
+        if (! is_array($pending) || (int) ($pending['current_step_id'] ?? 0) !== (int) $stepId) {
+            return false;
+        }
+
+        $step = OptionalFlowStep::find((int) $stepId);
+
+        if ($step === null) {
+            return false;
+        }
+
+        $selections = $pending['selections'] ?? [];
+        $stepSelections = $selections[(int) $stepId] ?? [];
+
+        if (! in_array((int) $optionId, $stepSelections, true)) {
+            $stepSelections[] = (int) $optionId;
+        }
+
+        $selections[(int) $stepId] = $stepSelections;
+        $pending['selections'] = $selections;
+        $state['pending_add'] = $pending;
+        $this->saveFlowState($phone, $state);
+
+        if ((int) $step->max_select <= 1) {
+            return $this->advanceCustomizationStep($phone);
+        }
+
+        $nonce = now()->getTimestampMs();
+        Cache::put('zapi:customization:nonce:'.$phone, $nonce, 60);
+
+        AdvanceCustomizationStepJob::dispatch($phone, $nonce)
+            ->delay(now()->addSeconds(3));
+
+        return true;
+    }
+
+    /**
+     * Fim da fila de customização: resolve as seleções em customizations e comita a linha do
+     * carrinho.
+     */
+    private function commitPendingCustomization(string $phone, array $state, array $pending): bool
+    {
+        $selections = $pending['selections'] ?? [];
+        $optionIds = collect($selections)->flatten()->map(fn ($id): int => (int) $id)->unique()->values();
+
+        $customizations = [];
+
+        if ($optionIds->isNotEmpty()) {
+            $options = OptionalFlowStepOption::query()->whereIn('id', $optionIds)->get()->keyBy('id');
+
+            foreach ($selections as $stepId => $ids) {
+                foreach ((array) $ids as $optionId) {
+                    $option = $options->get((int) $optionId);
+
+                    if ($option === null) {
+                        continue;
+                    }
+
+                    $customizations[] = [
+                        'step_id'   => (int) $stepId,
+                        'option_id' => (int) $optionId,
+                        'label'     => (string) $option->title,
+                        'price'     => (float) $option->price,
+                    ];
+                }
+            }
+        }
+
+        unset($state['pending_add']);
+        $this->saveFlowState($phone, $state);
+
+        return $this->commitAndSendFeedback(
+            $phone,
+            (string) ($pending['store_id'] ?? ''),
+            (int) ($pending['product_id'] ?? 0),
+            $pending['variation_id'] ?? null,
+            $pending['variation_name'] ?? null,
+            (float) ($pending['variation_additional_price'] ?? 0.0),
+            (int) ($pending['quantity'] ?? 1),
+            $customizations
         );
     }
 
@@ -263,7 +609,7 @@ class CartFlow
 
         foreach ($items as $index => $item) {
             $label = $item['product_name'] . ($item['variation_name'] ? " ({$item['variation_name']})" : "");
-            $valorTotalItem = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $valorTotalItem = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
 
             // 🔍 1. Busca o produto no banco de dados para pegar a foto real
             $product = \App\Models\Product::find($item['product_id']);
@@ -321,7 +667,8 @@ class CartFlow
         ?int $variationId,
         ?string $variationName,
         float $variationAdditionalPrice,
-        int $quantity
+        int $quantity,
+        array $customizations = []
     ): bool {
         $lock = Cache::lock('zapi:cart:lock:' . $phone, 10);
 
@@ -354,17 +701,24 @@ class CartFlow
                 return $this->sendCartStoreConflictPrompt($phone, (string) $cart['store_id'], $storeId, $productId);
             }
 
+            $customizationsTotal = array_sum(array_map(
+                static fn (array $customization): float => (float) ($customization['price'] ?? 0),
+                $customizations
+            ));
+
             // Adiciona o item ao array do carrinho
             $cart['store_id'] = $storeId;
             $cart['items'][] = [
-                'product_id'       => $productId,
-                'product_name'     => (string) $product->name,
-                'base_price'       => (float) $product->price,
-                'variation_id'     => $variationId,
-                'variation_name'   => $variationName,
-                'additional_price' => $variationAdditionalPrice,
-                'quantity'         => $quantity,
-                'observation'      => null,
+                'product_id'            => $productId,
+                'product_name'          => (string) $product->name,
+                'base_price'            => (float) $product->price,
+                'variation_id'          => $variationId,
+                'variation_name'        => $variationName,
+                'additional_price'      => $variationAdditionalPrice,
+                'customizations'        => $customizations,
+                'customizations_total'  => $customizationsTotal,
+                'quantity'              => $quantity,
+                'observation'           => null,
             ];
 
             $state['cart'] = $cart;
@@ -415,10 +769,15 @@ class CartFlow
         // Aqui está o segredo: listamos todos os itens do carrinho atual
         foreach ($cartItems as $item) {
             $itemLabel = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
-            $itemUnit  = ($item['base_price'] + $item['additional_price']);
+            $itemUnit  = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']);
             $itemTotal = $itemUnit * $item['quantity'];
             $cartTotal += $itemTotal;
             $summaryLines[] = "- {$item['quantity']}x {$itemLabel}";
+
+            foreach ($item['customizations'] as $customization) {
+                $price = (float) ($customization['price'] ?? 0);
+                $summaryLines[] = '  ➕ '.($customization['label'] ?? '').($price > 0 ? ' — R$ '.number_format($price, 2, ',', '.') : '');
+            }
         }
 
         // Montamos a mensagem acumulada
@@ -531,14 +890,16 @@ class CartFlow
             // New format: each element is an item array
             return array_values(array_filter(
                 array_map(fn (mixed $item): ?array => is_array($item) ? [
-                    'product_id'       => (int) ($item['product_id'] ?? 0),
-                    'product_name'     => (string) ($item['product_name'] ?? 'Produto'),
-                    'base_price'       => (float) ($item['base_price'] ?? 0.0),
-                    'additional_price' => (float) ($item['additional_price'] ?? 0.0),
-                    'quantity'         => max(1, (int) ($item['quantity'] ?? 1)),
-                    'variation_id'     => isset($item['variation_id']) ? (int) $item['variation_id'] : null,
-                    'variation_name'   => isset($item['variation_name']) ? (string) $item['variation_name'] : null,
-                    'observation'      => isset($item['observation']) && $item['observation'] !== '' ? (string) $item['observation'] : null,
+                    'product_id'            => (int) ($item['product_id'] ?? 0),
+                    'product_name'          => (string) ($item['product_name'] ?? 'Produto'),
+                    'base_price'            => (float) ($item['base_price'] ?? 0.0),
+                    'additional_price'      => (float) ($item['additional_price'] ?? 0.0),
+                    'customizations'        => is_array($item['customizations'] ?? null) ? $item['customizations'] : [],
+                    'customizations_total'  => (float) ($item['customizations_total'] ?? 0.0),
+                    'quantity'              => max(1, (int) ($item['quantity'] ?? 1)),
+                    'variation_id'          => isset($item['variation_id']) ? (int) $item['variation_id'] : null,
+                    'variation_name'        => isset($item['variation_name']) ? (string) $item['variation_name'] : null,
+                    'observation'           => isset($item['observation']) && $item['observation'] !== '' ? (string) $item['observation'] : null,
                 ] : null, $items)
             ));
         }
@@ -554,14 +915,16 @@ class CartFlow
             $product = Product::find((int) $productId);
 
             $normalized[] = [
-                'product_id'       => (int) $productId,
-                'product_name'     => $product ? (string) $product->name : 'Produto #'.$productId,
-                'base_price'       => $product ? (float) $product->price : 0.0,
-                'additional_price' => 0.0,
-                'quantity'         => (int) $qty,
-                'variation_id'     => null,
-                'variation_name'   => null,
-                'observation'      => null,
+                'product_id'            => (int) $productId,
+                'product_name'          => $product ? (string) $product->name : 'Produto #'.$productId,
+                'base_price'            => $product ? (float) $product->price : 0.0,
+                'additional_price'      => 0.0,
+                'customizations'        => [],
+                'customizations_total'  => 0.0,
+                'quantity'              => (int) $qty,
+                'variation_id'          => null,
+                'variation_name'        => null,
+                'observation'           => null,
             ];
         }
 
@@ -598,10 +961,13 @@ class CartFlow
         $index = 1;
 
         foreach ($this->normalizeCartItems($cart['items']) as $item) {
-            $lineTotal = ($item['base_price'] + $item['additional_price']) * $item['quantity'];
+            $lineTotal = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
             $total += $lineTotal;
             $label = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
             $lines[] = $index.'. '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            foreach ($item['customizations'] as $customization) {
+                $lines[] = '   ➕ '.($customization['label'] ?? '');
+            }
             if ($item['observation']) {
                 $lines[] = '   📝 '.$item['observation'];
             }

@@ -128,27 +128,6 @@ class ProductsHandler
     }
 
 
-    public function sendProductResponse(string $phone): bool
-    {
-        $catalogPhone = trim((string) config('services.zapi.catalog_phone'));
-        $productId = trim((string) config('services.zapi.product_id'));
-
-        if ($catalogPhone === '' || $productId === '') {
-            return false;
-        }
-
-        try {
-            $this->zapiClient->sendProduct($phone, $catalogPhone, $productId);
-            return true;
-        } catch (\Throwable $exception) {
-            Log::warning('Failed to send Z-API product response.', [
-                'phone' => $phone,
-                'error' => $exception->getMessage(),
-            ]);
-            return false;
-        }
-    }
-
     private function buildMenuIntroMessage(Store $store): string
     {
         return '📖 Cardápio: '.$store->name." 📖\n\n"

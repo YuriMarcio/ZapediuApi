@@ -264,6 +264,20 @@ class ButtonHandler
             return $this->cartFlow->handleVariationSelected($phone, str_replace('flow_variation_', '', $buttonId));
         }
 
+        // Motor de customização (adicionais/tamanho/etc.) — "Quer adicionais?" sim/não
+        if (str_starts_with($buttonId, 'flow_custask_')) {
+            return $this->cartFlow->confirmWantsCustomizationStep($phone, str_replace('flow_custask_', '', $buttonId), true);
+        }
+
+        if (str_starts_with($buttonId, 'flow_custskip_')) {
+            return $this->cartFlow->confirmWantsCustomizationStep($phone, str_replace('flow_custskip_', '', $buttonId), false);
+        }
+
+        // Motor de customização — seleção de uma opção (flow_custopt_{stepId}_{optionId})
+        if (preg_match('/^flow_custopt_(\d+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->handleCustomizationOptionSelected($phone, $matches[1], $matches[2]);
+        }
+
         // Paginação de Lojas
         if (preg_match('/^(flow|view)_more_(\d+)$/', $buttonId, $matches)) {
             return $this->storeHandle->sendStoresPage($phone, (int) $matches[2]);
