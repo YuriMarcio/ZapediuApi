@@ -55,7 +55,29 @@ class CheckoutFlow
             'quantity' => (int) ($item['quantity'] ?? 1),
             'variation_name' => $item['variation_name'] ?? null,
             'observation' => $item['observation'] ?? null,
+            'extra_product_id' => $item['extra_product_id'] ?? null,
+            'extra_product_name' => $item['extra_product_name'] ?? null,
         ], $items);
+    }
+
+    /**
+     * "Pizza Grande de Calabresa com Frango com Catupiry" — nome + tamanho + sabor extra
+     * (quando existir). Espelha CartFlow::cartItemLabel pro texto do pedido bater com o do
+     * carrinho.
+     */
+    private function cartItemLabel(array $item): string
+    {
+        $label = (string) $item['product_name'];
+
+        if (! empty($item['variation_name'])) {
+            $label .= ' ('.$item['variation_name'].')';
+        }
+
+        if (! empty($item['extra_product_name'])) {
+            $label .= ' + '.$item['extra_product_name'];
+        }
+
+        return $label;
     }
 
     private function buildStoreDeliveryFee(Store $store): float
@@ -659,7 +681,7 @@ class CheckoutFlow
         foreach ($items as $item) {
             $lineTotal    = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
             $subtotal    += $lineTotal;
-            $label        = $item['product_name'].($item['variation_name'] ? ' ('.$item['variation_name'].')' : '');
+            $label        = $this->cartItemLabel($item);
             $line         = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
             foreach ($item['customizations'] as $customization) {
                 $line .= "\n   ➕ ".($customization['label'] ?? '');
@@ -823,7 +845,10 @@ class CheckoutFlow
             'user_id'          => $customerUser?->id,
             'company_id'       => $store?->company_id,
             'store_id'         => $store?->id,
-            'product_ids'      => array_values(array_map(static fn (array $item): int => (int) $item['product_id'], $items)),
+            'product_ids'      => array_values(array_unique(array_merge(
+                array_map(static fn (array $item): int => (int) $item['product_id'], $items),
+                array_values(array_filter(array_map(static fn (array $item): ?int => $item['extra_product_id'] ?? null, $items)))
+            ))),
             'status'           => 'pending',
             'payment_status'   => 'pending',
             'notes'            => (string) ($customer['reference'] ?? ''),

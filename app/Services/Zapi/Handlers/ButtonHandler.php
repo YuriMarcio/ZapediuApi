@@ -278,6 +278,29 @@ class ButtonHandler
             return $this->cartFlow->handleCustomizationOptionSelected($phone, $matches[1], $matches[2]);
         }
 
+        // Fluxo de pizzaria/açaiteria — botão de tamanho no carrossel (flow_pizza_size_{productId}_{variationId})
+        if (preg_match('/^flow_pizza_size_(\d+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->handlePizzaSizePicked($phone, $matches[1], $matches[2]);
+        }
+
+        // "Deseja adicionar mais algum sabor?" sim/não
+        if ($buttonId === 'flow_pizza_extra_yes') {
+            return $this->cartFlow->handleExtraFlavorAnswer($phone, true);
+        }
+        if ($buttonId === 'flow_pizza_extra_no') {
+            return $this->cartFlow->handleExtraFlavorAnswer($phone, false);
+        }
+
+        // Sabor extra escolhido no carrossel (flow_pizza_extra_pick_{productId})
+        if (preg_match('/^flow_pizza_extra_pick_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->handleExtraFlavorPicked($phone, $matches[1]);
+        }
+
+        // "Deseja adicionar uma borda?" sim/não (flow_pizza_borda_yes|no_{stepId})
+        if (preg_match('/^flow_pizza_borda_(yes|no)_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->confirmWantsBordaStep($phone, $matches[2], $matches[1] === 'yes');
+        }
+
         // Paginação de Lojas
         if (preg_match('/^(flow|view)_more_(\d+)$/', $buttonId, $matches)) {
             return $this->storeHandle->sendStoresPage($phone, (int) $matches[2]);

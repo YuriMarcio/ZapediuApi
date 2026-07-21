@@ -37,7 +37,8 @@ class StockService
                 'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
                 'variationGroup:id,name,required',
                 'variationGroup.options:id,variation_group_id,name,price,sort_order',
-                'variations:id,product_id,name,price,stock_quantity,is_default,is_active',
+                'variations:id,product_id,name,price,additional_price,stock_quantity,is_default,is_active',
+                'optionalFlows:id',
             ])
             ->when(
                 $request->filled('search'),
@@ -68,6 +69,9 @@ class StockService
             }
             if ($product->relationLoaded('category') && $product->category) {
                 $product->category->makeHidden('products');
+            }
+            if ($product->relationLoaded('optionalFlows')) {
+                $product->setAttribute('optional_flow_id', $product->optionalFlows->first()?->id);
             }
             return $product;
         });
@@ -162,6 +166,16 @@ class StockService
 
             return $product;
         });
+    }
+
+    /**
+     * Substitui as atribuições diretas de fluxo de opcionais do produto (não mexe em
+     * atribuições herdadas da categoria) por, no máximo, uma — espelha o dropdown de seleção
+     * única "Lista de opcionais" do formulário, mesmo o modelo suportando N:N.
+     */
+    public function syncOptionalFlowAssignment(Product $product, ?int $optionalFlowId): void
+    {
+        $product->optionalFlows()->sync($optionalFlowId !== null ? [$optionalFlowId] : []);
     }
 
     /**
@@ -295,6 +309,10 @@ class StockService
     private function syncVariations(Product $product, array $variations): void
     {
         if ($variations === []) {
+            if ($product->has_variations) {
+                $product->forceFill(['has_variations' => false])->save();
+            }
+
             return;
         }
 
@@ -305,6 +323,7 @@ class StockService
                 'name',
                 'sku',
                 'price',
+                'additional_price',
                 'stock_quantity',
                 'attributes',
                 'is_default',
@@ -332,5 +351,9 @@ class StockService
         }
 
         $product->variations()->whereNotIn('id', $existingIds)->delete();
+
+        if (! $product->has_variations) {
+            $product->forceFill(['has_variations' => true])->save();
+        }
     }
 }

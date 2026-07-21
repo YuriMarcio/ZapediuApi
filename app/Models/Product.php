@@ -29,17 +29,21 @@ class Product extends Model implements HasMedia
         'category',
         'image_path',
         'price',
+        'promotional_price',
         'stock_quantity',
         'is_active',
         'has_variations',
         'variation_question',
+        'available_for_combo',
     ];
 
     protected $casts = [
         'price' => 'decimal:2',
+        'promotional_price' => 'decimal:2',
         'stock_quantity' => 'integer',
         'is_active' => 'boolean',
         'has_variations' => 'boolean',
+        'available_for_combo' => 'boolean',
     ];
 
     protected $hidden = [

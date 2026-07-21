@@ -77,6 +77,7 @@ class CategoryController extends Controller
             'name' => $category->name,
             'slug' => $category->slug,
             'icon' => $category->icon,
+            'description' => $category->description,
             'image_url' => $category->image_url,
             'color' => $category->color,
             'sort_order' => (int) ($category->ordem_exibicao ?? 0),

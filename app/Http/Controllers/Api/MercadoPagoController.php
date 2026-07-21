@@ -8,6 +8,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use App\Models\Wallet;
+use App\Models\Store;
 // Import the V3 SDK classes
 use MercadoPago\MercadoPagoConfig;
 use MercadoPago\Client\Payment\PaymentClient;
@@ -310,13 +311,18 @@ public function handleCallback(Request $request)
 
         if ($wallet) {
             $wallet->update([
-                'mp_access_token'  => $access_token, 
+                'mp_access_token'  => $access_token,
                 'mp_refresh_token' => 'mock_refresh_token_sandbox',
                 'mp_public_key'    => $public_key,
                 'mp_user_id'       => '385386043',
                 'mp_expires_at'    => now()->addYears(1), // Evita expirar durante os testes
                 'is_active'        => true
             ]);
+
+            // Mercado Pago conectado: a(s) loja(s) da empresa ficam elegíveis e ativas
+            // para receber pedidos (fora de produção elas já nascem ativas, então isso
+            // é um no-op nesse caso).
+            Store::where('company_id', $companyId)->update(['is_active' => true]);
 
             Log::info('Carteira forçada para modo Sandbox com sucesso!', ['company_id' => $companyId]);
         }

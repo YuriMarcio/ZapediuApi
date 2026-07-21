@@ -11,6 +11,7 @@ use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 use App\Models\Category;
 use App\Services\GeocodeService;
+use App\Services\Stores\StoreSizeTemplateDefaults;
 use Illuminate\Support\Facades\Log;
 
 /**
@@ -24,6 +25,12 @@ class Store extends Model implements HasMedia
     use BelongsToCompany;
     use InteractsWithMedia;
 
+    /**
+     * Tipos de negócio suportados. Pizzaria e açaiteria compartilham o mesmo fluxo de
+     * cardápio (tamanhos + "meio a meio" / múltiplos sabores).
+     */
+    public const BUSINESS_TYPES = ['pizzaria', 'acaiteria', 'outros'];
+
     protected $fillable = [
         'company_id',
         'user_id',
@@ -32,6 +39,9 @@ class Store extends Model implements HasMedia
         'slug',
         'full_address',
         'segment',
+        'business_type',
+        'max_flavors',
+        'size_template',
         'category_id',
         'whatsapp_phone',
         'phone',
@@ -58,10 +68,40 @@ class Store extends Model implements HasMedia
         'is_active' => 'boolean',
         'settings' => 'array',
         'business_hours' => 'array',
+        'size_template' => 'array',
     ];
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
+    }
+
+    /**
+     * Pizzaria e açaiteria compartilham o mesmo fluxo de cardápio no WhatsApp: tamanho por
+     * botão + pergunta de borda. Lojas 'outros' seguem o fluxo padrão (botões de quantidade).
+     */
+    public function isFlavorMenuStore(): bool
+    {
+        return in_array($this->business_type, ['pizzaria', 'acaiteria'], true);
+    }
+
+    /**
+     * Subconjunto do fluxo acima: só entra a pergunta de "outro sabor?" (meio a meio) quando
+     * a loja permite combinar 2+ sabores num item.
+     */
+    public function usesFlavorComboFlow(): bool
+    {
+        return $this->isFlavorMenuStore() && (int) $this->max_flavors >= 2;
+    }
+
+    /**
+     * Tamanhos disponíveis pro fluxo de sabor (grade fixa do formulário "Novo sabor").
+     * Usa o template salvo pela loja, ou o default do business_type se nada foi salvo.
+     *
+     * @return array<int, array{key: string, label: string, sublabel: string}>
+     */
+    public function sizeTemplate(): array
+    {
+        return $this->size_template ?? StoreSizeTemplateDefaults::for($this->business_type);
     }
 
     public function categories(): HasMany

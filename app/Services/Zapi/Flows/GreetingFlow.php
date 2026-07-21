@@ -86,15 +86,16 @@ class GreetingFlow
             return true; // Already redirected to order status
         }
 
-        $message = "Olá! 👋 Bem-vindo ao Zapediu!\n\nEstou aqui para matar a sua fome em poucos segundos. 🛵💨\n\nO que você quer fazer hoje?";
-        $fallback = "Olá! 👋 Bem-vindo ao Zapediu! Use as opções abaixo ou digite o que procura (ex: 'Quero Pizza'):";
+        $title = 'Bem-vindo ao Zapediu! 👋';
+        $message = "Estou aqui para matar a sua fome em poucos segundos. 🛵💨\n\nO que você quer fazer hoje?";
+        $fallback = "{$title}\n\nUse as opções abaixo ou digite o que procura (ex: 'Quero Pizza'):";
 
         // Tenta enviar botões
         $sent = $this->zapiClient->sendButtonActions($phone, $message, [
             ['id' => 'btn_ver_lojas',      'label' => '🏪 Ver Lojas'],
             ['id' => 'btn_ver_categorias', 'label' => '🍔 Categorias'],
             ['id' => 'btn_como_funciona',  'label' => '❓ Ajuda'],
-        ]);
+        ], $title);
 
         // Se retornou sucesso (true ou objeto), encerramos aqui.
         if ($sent) {

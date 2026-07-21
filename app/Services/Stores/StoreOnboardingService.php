@@ -28,7 +28,10 @@ class StoreOnboardingService
         $payload = $data;
         $payload['user_id'] = $request->user()->id;
         $payload['slug'] = $this->uniqueSlug((string) $data['name']);
-        $payload['is_active'] = true;
+        // Loja só fica elegível para receber pedidos depois que o lojista conectar o
+        // Mercado Pago (ver MercadoPagoController::handleCallback). Fora de produção
+        // essa exigência é liberada para não travar o ambiente de dev.
+        $payload['is_active'] = ! app()->isProduction();
 
         // Logo
         $logo = $request->file('logo');

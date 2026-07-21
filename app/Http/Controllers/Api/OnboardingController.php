@@ -51,6 +51,17 @@ class OnboardingController extends Controller
         return response()->json($result, Response::HTTP_CREATED);
     }
 
+    public function storeForManager(OnboardingStoreRequest $request): JsonResponse
+    {
+        $data = $request->validated();
+        unset($data['seller_code']);
+
+        return response()->json(
+            $this->service->create($data, assignDefaultOwnerPassword: true, includeAuth: false),
+            Response::HTTP_CREATED,
+        );
+    }
+
     public function metadata(): JsonResponse
     {
         return response()->json([

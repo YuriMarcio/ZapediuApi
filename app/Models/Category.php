@@ -16,6 +16,7 @@ class Category extends Model
         'company_id',
         'name',
         'icon',
+        'description',
         'slug',
         'image_url',
         'ordem_exibicao',

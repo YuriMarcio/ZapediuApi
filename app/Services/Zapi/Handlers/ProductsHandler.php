@@ -37,6 +37,7 @@ class ProductsHandler
         }
 
         $productsQuery = Product::query()
+            ->with('variations')
             ->where('is_active', true)
             ->where('store_id', $store->id)
             ->orderBy('name');
@@ -58,11 +59,7 @@ class ProductsHandler
                 // Chamando o método public do Builder (Problema 3)
                 'text' => $this->carouselBuilder->formatProductCardText($product, $store),
                 'image' => $product->image_path ?? 'https://picsum.photos/seed/produto-'.(int) $product->id.'/600/600',
-                'buttons' => [
-                    ['id' => 'flow_add1_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 1', 'type' => 'REPLY'],
-                    ['id' => 'flow_add2_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 2', 'type' => 'REPLY'],
-                    ['id' => 'flow_add3_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 3', 'type' => 'REPLY'],
-                ],
+                'buttons' => $this->buildProductButtons($store, $product),
             ];
         }
 
@@ -127,6 +124,39 @@ class ProductsHandler
         }
     }
 
+
+    /**
+     * Lojas 'pizzaria'/'acaiteria' mostram botões de tamanho (leva direto pro fluxo de
+     * sabor+borda em CartFlow::handlePizzaSizePicked) quando o produto tem variações ativas.
+     * Qualquer outro caso (loja padrão, ou produto sem tamanho) mantém os botões de
+     * quantidade de sempre — nada muda pra quem já usa o fluxo antigo.
+     */
+    private function buildProductButtons(Store $store, Product $product): array
+    {
+        if ($store->isFlavorMenuStore() && (bool) $product->has_variations) {
+            $variations = $product->variations
+                ->filter(fn (ProductVariation $v): bool => (bool) $v->is_active)
+                ->values();
+
+            if ($variations->isNotEmpty()) {
+                return $variations->take(3)->map(fn (ProductVariation $v): array => [
+                    'id'    => 'flow_pizza_size_'.(int) $product->id.'_'.(int) $v->id,
+                    'label' => $v->name.(
+                        ((float) $v->additional_price) > 0
+                            ? ' — R$ '.number_format(((float) $product->price) + ((float) $v->additional_price), 2, ',', '.')
+                            : ' — R$ '.number_format((float) $product->price, 2, ',', '.')
+                    ),
+                    'type'  => 'REPLY',
+                ])->values()->all();
+            }
+        }
+
+        return [
+            ['id' => 'flow_add1_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 1', 'type' => 'REPLY'],
+            ['id' => 'flow_add2_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 2', 'type' => 'REPLY'],
+            ['id' => 'flow_add3_'.$store->slug.'_'.(int) $product->id, 'label' => '➕ Adicionar 3', 'type' => 'REPLY'],
+        ];
+    }
 
     private function buildMenuIntroMessage(Store $store): string
     {

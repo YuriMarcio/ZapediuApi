@@ -19,7 +19,9 @@ class EnsureRole
             abort(Response::HTTP_UNAUTHORIZED, 'Usuario nao autenticado.');
         }
 
-        if ($roles !== [] && ! in_array((string) $user->role, $roles, true)) {
+        $isMaster = (string) $user->role === 'master';
+
+        if (! $isMaster && $roles !== [] && ! in_array((string) $user->role, $roles, true)) {
             abort(Response::HTTP_FORBIDDEN, 'Permissao insuficiente para esta operacao.');
         }
 

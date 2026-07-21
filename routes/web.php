@@ -72,6 +72,7 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
 	Route::get('/company', [CompanyController::class, 'me'])->name('company.me');
 	Route::put('/company', [CompanyController::class, 'update'])->middleware('role:owner,manager')->name('company.update');
     Route::put('/company/plan', [CompanyController::class, 'switchPlan'])->middleware('role:seller')->name('company.plan');
+    Route::post('/onboarding/stores', [OnboardingController::class, 'storeForManager'])->middleware('role:owner,manager')->name('onboarding.stores');
 
     // Estoque – Produtos
     Route::apiResource('products', ProductController::class);

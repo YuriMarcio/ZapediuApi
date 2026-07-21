@@ -33,11 +33,15 @@ class ProductController extends Controller
      */
     public function store(StoreProductRequest $request): JsonResponse
     {
-        $data       = $request->safe()->except('variations', 'image');
+        $data       = $request->safe()->except('variations', 'image', 'optional_flow_id');
         $variations = (array) $request->input('variations', []);
         $image      = $request->file('image');
 
         $product = $this->stockService->createProduct($data, $variations, $image, $request);
+
+        if ($request->has('optional_flow_id')) {
+            $this->stockService->syncOptionalFlowAssignment($product, $request->integer('optional_flow_id') ?: null);
+        }
 
         return response()->json($product, 201);
     }
@@ -54,6 +58,7 @@ class ProductController extends Controller
             'variationGroup:id,name,required',
             'variationGroup.options:id,variation_group_id,name,price,sort_order',
             'variations',
+            'optionalFlows:id',
         ]);
 
         // Hide circular relationships to prevent infinite recursion
@@ -67,7 +72,10 @@ class ProductController extends Controller
             $product->category->makeHidden('products');
         }
 
-        return response()->json($product);
+        $data = $product->toArray();
+        $data['optional_flow_id'] = $product->optionalFlows->first()?->id;
+
+        return response()->json($data);
     }
 
     /**
@@ -75,11 +83,15 @@ class ProductController extends Controller
      */
     public function update(UpdateProductRequest $request, Product $product): JsonResponse
     {
-        $data       = $request->safe()->except('variations', 'image');
+        $data       = $request->safe()->except('variations', 'image', 'optional_flow_id');
         $variations = (array) $request->input('variations', []);
         $image      = $request->file('image');
 
         $product = $this->stockService->updateProduct($product, $data, $variations, $image, $request);
+
+        if ($request->has('optional_flow_id')) {
+            $this->stockService->syncOptionalFlowAssignment($product, $request->integer('optional_flow_id') ?: null);
+        }
 
         return response()->json($product);
     }

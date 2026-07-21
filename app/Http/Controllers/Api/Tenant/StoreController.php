@@ -24,6 +24,7 @@ class StoreController extends Controller
         $result = $stores->map(function ($store) {
             $data = $store->toArray();
             $data['store_id'] = $store->id;
+            $data['size_template'] = $store->sizeTemplate();
             return $data;
         });
         return response()->json($result);
@@ -38,7 +39,10 @@ class StoreController extends Controller
 
     public function show(Store $store): JsonResponse
     {
-        return response()->json($store->load('owner:id,name,email'));
+        $data = $store->load('owner:id,name,email')->toArray();
+        $data['size_template'] = $store->sizeTemplate();
+
+        return response()->json($data);
     }
 
     public function updateIdentity(Request $request, Store $store): JsonResponse
@@ -64,6 +68,9 @@ class StoreController extends Controller
             'logo_url'   => $store->logo_url,
             'cover_image_path' => $store->cover_image_path,
             'cover_image_url'  => $store->cover_image_url,
+            'business_type'    => $store->business_type,
+            'max_flavors'      => $store->max_flavors,
+            'size_template'    => $store->sizeTemplate(),
         ]);
     }
 

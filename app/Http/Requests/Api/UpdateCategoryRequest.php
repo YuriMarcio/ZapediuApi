@@ -32,6 +32,7 @@ class UpdateCategoryRequest extends StoreCategoryRequest
                 },
             ],
             'icon' => ['nullable', 'string', 'max:32'],
+            'description' => ['nullable', 'string', 'max:120'],
             'color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{3,6}$/'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
             'is_active' => ['sometimes', 'boolean'],

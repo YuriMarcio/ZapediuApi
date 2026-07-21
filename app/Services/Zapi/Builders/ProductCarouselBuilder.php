@@ -11,12 +11,31 @@ class ProductCarouselBuilder
     public function formatProductCardText(Product $product, Store $store): string
     {
         $name = trim((string) $product->name);
-        $price = 'R$ '.number_format((float) $product->price, 2, ',', '.');
         $description = $this->normalizeProductDescription((string) ($product->description ?? 'Produto saboroso.'));
 
         return $name.' '.$this->productEmoji($product, $store)."\n\n"
-            .'🏷️ Por: '.$price."\n\n"
+            .$this->formatPriceLine($product)."\n\n"
             .'💬 "'.$description.'"';
+    }
+
+    public function formatPriceLine(Product $product): string
+    {
+        $price = (float) $product->price;
+        $promotionalPrice = $product->promotional_price !== null ? (float) $product->promotional_price : null;
+
+        if ($promotionalPrice === null || $promotionalPrice >= $price) {
+            return '🏷️ Por: '.$this->formatMoney($price);
+        }
+
+        $discountPct = (int) round((1 - ($promotionalPrice / $price)) * 100);
+
+        return '~De: '.$this->formatMoney($price)."~\n"
+            .'🔥 Por: '.$this->formatMoney($promotionalPrice)." ({$discountPct}% OFF)";
+    }
+
+    private function formatMoney(float $value): string
+    {
+        return 'R$ '.number_format($value, 2, ',', '.');
     }
 
     public function normalizeProductDescription(string $description): string
