@@ -7,6 +7,7 @@ use App\Models\Store;
 use App\Models\User;
 use App\Models\UserAddress;
 use App\Models\UserPhone;
+use App\Services\GeocodeService;
 use App\Services\Whatsapp\WhatsAppClientInterface;
 use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\App;
@@ -20,8 +21,7 @@ class CheckoutFlow
     public function __construct(
         private FlowManager $flow,
         private WhatsAppClientInterface $zapiClient,
-    ) {
-    }
+    ) {}
 
     // 2. Auxiliar para salvar estado de forma consistente
     private function saveFlowState(string $phone, array $state): void
@@ -39,6 +39,7 @@ class CheckoutFlow
     private function sendWelcomePrompt(string $phone): bool
     {
         $greetingFlow = App::make(GreetingFlow::class);
+
         return $greetingFlow->sendWelcomePrompt($phone);
     }
 
@@ -87,7 +88,7 @@ class CheckoutFlow
         $state = $this->flow->getState($this->currentPhone ?? '');
         $customer = $state['customer_coords'] ?? null; // Lat/Lng que o Google salvou
 
-        if (!$customer) {
+        if (! $customer) {
             return 8.0;
         }
 
@@ -128,7 +129,7 @@ class CheckoutFlow
             if (((($polygon[$i]['lat'] > $lat) != ($polygon[$j]['lat'] > $lat))) &&
                 ($lng < ($polygon[$j]['lng'] - $polygon[$i]['lng']) * ($lat - $polygon[$i]['lat']) /
                 ($polygon[$j]['lat'] - $polygon[$i]['lat']) + $polygon[$i]['lng'])) {
-                $inside = !$inside;
+                $inside = ! $inside;
             }
         }
 
@@ -144,6 +145,7 @@ class CheckoutFlow
              cos(deg2rad($lat1)) * cos(deg2rad($lat2)) *
              sin($dLon / 2) * sin($dLon / 2);
         $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+
         return $earthRadius * $c;
     }
 
@@ -152,12 +154,14 @@ class CheckoutFlow
         $state = $this->flow->getState($phone);
         $cart = $state['cart'] ?? null;
 
-        if (!is_array($cart) || empty($cart['items'])) {
+        if (! is_array($cart) || empty($cart['items'])) {
             try {
                 $this->zapiClient->sendText($phone, '🛒 Seu carrinho está vazio. Adicione produtos antes de finalizar.');
+
                 return true;
             } catch (\Throwable $e) {
                 Log::warning('Failed to send finalize-empty-cart', ['error' => $e->getMessage()]);
+
                 return false;
             }
         }
@@ -187,7 +191,7 @@ class CheckoutFlow
 
             Log::info('User found for checkout, sending address confirmation', ['phone' => $normalizedPhone, 'customer' => $customer]);
 
-            return !empty($customer['address'])
+            return ! empty($customer['address'])
                 ? $this->sendAddressConfirmation($phone, $customer)
                 : $this->startCheckoutDataCollection($phone);
         }
@@ -201,10 +205,10 @@ class CheckoutFlow
         Log::info('Sending address confirmation to '.$phone.' for customer: '.json_encode($customer));
         // ✅ Deixe a mensagem direto ao ponto:
         $reference = $customer['reference'] ?? '';
-        $message = "📍 *Entrega será em:*\n" .
-               "{$customer['address']}\n" .
-               ($reference ? "📌 *Referência:* $reference\n\n" : "\n") .
-               "Está correto?";
+        $message = "📍 *Entrega será em:*\n".
+               "{$customer['address']}\n".
+               ($reference ? "📌 *Referência:* $reference\n\n" : "\n").
+               'Está correto?';
 
         try {
             // Remova a palavra "return" daqui
@@ -216,6 +220,7 @@ class CheckoutFlow
             return true;
         } catch (\Throwable $e) {
             Log::error('Erro ao enviar confirmação de endereço', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -256,7 +261,7 @@ class CheckoutFlow
         try {
             $this->zapiClient->sendText(
                 $phone,
-                "📧 Informe seu e-mail para verificarmos se já tem cadastro e receber o comprovante:"
+                '📧 Informe seu e-mail para verificarmos se já tem cadastro e receber o comprovante:'
             );
 
             return true;
@@ -281,6 +286,7 @@ class CheckoutFlow
             ]);
         }
     }
+
     private function resolveCustomerUser(?int $companyId, string $customerName, string $customerPhone, string $customerEmail, string $orderCode): ?User
     {
         if ($customerPhone === '' && $customerEmail === '') {
@@ -296,14 +302,14 @@ class CheckoutFlow
         return User::updateOrCreate(
             [
                 'company_id' => $companyId,
-                'email'      => $emailToUse, // Chave única que estava dando erro
+                'email' => $emailToUse, // Chave única que estava dando erro
             ],
             [
-                'name'     => $customerName !== '' ? $customerName : 'Cliente '.($customerPhone !== '' ? $customerPhone : $orderCode),
-                'phone'    => $customerPhone !== '' ? $customerPhone : null,
+                'name' => $customerName !== '' ? $customerName : 'Cliente '.($customerPhone !== '' ? $customerPhone : $orderCode),
+                'phone' => $customerPhone !== '' ? $customerPhone : null,
                 'password' => Str::random(32),
                 'is_admin' => false,
-                'role'     => 'customer',
+                'role' => 'customer',
             ]
         );
     }
@@ -320,14 +326,14 @@ class CheckoutFlow
             return $this->sendWelcomePrompt($phone);
         }
 
-
         switch ($checkoutStep) {
             case 'verify_email_lookup':
                 $email = strtolower(trim($rawText));
 
-                if (!filter_var($email, FILTER_VALIDATE_EMAIL)) {
+                if (! filter_var($email, FILTER_VALIDATE_EMAIL)) {
                     try {
                         $this->zapiClient->sendText($phone, '⚠️ E-mail inválido. Digite um e-mail válido para continuar.');
+
                         return true;
                     } catch (\Throwable) {
                         return false;
@@ -357,6 +363,7 @@ class CheckoutFlow
                             $phone,
                             '🔐 Enviamos um código de 6 dígitos para seu e-mail. Digite o código aqui no WhatsApp para confirmar.'
                         );
+
                         return true;
                     } catch (\Throwable) {
                         return false;
@@ -502,14 +509,13 @@ class CheckoutFlow
                     return false;
                 }
 
-
             case 'collect_address':
             case 'change_address':
                 $state['customer']['address'] = trim($rawText);
 
                 // Tenta geocodificar o endereço
                 try {
-                    $coords = \App\Services\GeocodeService::getCoordinates($state['customer']['address']);
+                    $coords = GeocodeService::getCoordinates($state['customer']['address']);
                     if ($coords && isset($coords['latitude'], $coords['longitude'])) {
                         $state['customer_coords'] = [
                             'lat' => $coords['latitude'],
@@ -531,6 +537,7 @@ class CheckoutFlow
                         $this->zapiClient->sendText($phone, '✅ Endereço atualizado!');
                     } catch (\Throwable) {
                     }
+
                     return $this->sendOrderSummary($phone);
                 }
 
@@ -540,6 +547,7 @@ class CheckoutFlow
                         "📍 Tem alguma referência para ajudar na entrega?\n_Ex: Próximo ao mercado, portão azul_",
                         [['id' => 'checkout_skip_reference', 'label' => 'Pular']]
                     );
+
                     return true;
                 } catch (\Throwable) {
                     return false;
@@ -585,15 +593,15 @@ class CheckoutFlow
 
     private function sendDataConfirmation(string $phone): bool
     {
-        $state    = $this->flow->getState($phone);
+        $state = $this->flow->getState($phone);
         $customer = $state['customer'] ?? [];
 
-        $name      = trim((string) ($customer['name']      ?? ''));
-        $email     = trim((string) ($customer['email']     ?? ''));
-        $address   = trim((string) ($customer['address']   ?? ''));
+        $name = trim((string) ($customer['name'] ?? ''));
+        $email = trim((string) ($customer['email'] ?? ''));
+        $address = trim((string) ($customer['address'] ?? ''));
         $reference = trim((string) ($customer['reference'] ?? ''));
 
-        $lines   = [];
+        $lines = [];
         $lines[] = '✅ *Confirme seus dados de entrega:*';
         $lines[] = '';
 
@@ -634,10 +642,10 @@ class CheckoutFlow
 
     public function sendOrderSummary(string $phone): bool
     {
-        $state   = $this->flow->getState($phone);
-        $cart    = $state['cart'] ?? [];
+        $state = $this->flow->getState($phone);
+        $cart = $state['cart'] ?? [];
         $storeId = (string) ($cart['store_id'] ?? '');
-        $store   = Store::query()->where('slug', $storeId)->first();
+        $store = Store::query()->where('slug', $storeId)->first();
         $customer = $state['customer'] ?? [];
 
         if ($store === null) {
@@ -646,16 +654,16 @@ class CheckoutFlow
 
         // Patch: Sempre usar e persistir user_id
         $customerUser = null;
-        if (!empty($customer['user_id'])) {
+        if (! empty($customer['user_id'])) {
             $customerUser = User::find($customer['user_id']);
         }
-        if (!$customerUser) {
+        if (! $customerUser) {
             $normalizedPhone = (string) ($customer['phone'] ?? '');
             $email = (string) ($customer['email'] ?? '');
             $customerUser = User::where('phone', $normalizedPhone)
-                                ->orWhere('email', $email)
-                                ->first();
-            if (!$customerUser) {
+                ->orWhere('email', $email)
+                ->first();
+            if (! $customerUser) {
                 $customerUser = $this->resolveCustomerUser(
                     $store?->company_id,
                     (string) ($customer['name'] ?? ''),
@@ -679,10 +687,10 @@ class CheckoutFlow
         $itemLines = [];
 
         foreach ($items as $item) {
-            $lineTotal    = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
-            $subtotal    += $lineTotal;
-            $label        = $this->cartItemLabel($item);
-            $line         = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
+            $lineTotal = ($item['base_price'] + $item['additional_price'] + $item['customizations_total']) * $item['quantity'];
+            $subtotal += $lineTotal;
+            $label = $this->cartItemLabel($item);
+            $line = '• '.$item['quantity'].'x *'.$label.'* — R$ '.number_format($lineTotal, 2, ',', '.');
             foreach ($item['customizations'] as $customization) {
                 $line .= "\n   ➕ ".($customization['label'] ?? '');
             }
@@ -695,13 +703,13 @@ class CheckoutFlow
         $deliveryFee = $this->buildStoreDeliveryFee($store);
         $total = $subtotal + $deliveryFee;
 
-        $address   = (string) ($customer['address'] ?? '');
+        $address = (string) ($customer['address'] ?? '');
         $reference = (string) ($customer['reference'] ?? '');
 
         $etaSeeds = ['35–45 min', '30–40 min', '40–50 min', '45–55 min'];
-        $eta      = $etaSeeds[abs(crc32((string) $storeId)) % count($etaSeeds)];
+        $eta = $etaSeeds[abs(crc32((string) $storeId)) % count($etaSeeds)];
 
-        $lines   = [];
+        $lines = [];
         $lines[] = '🧾 *Resumo do seu pedido:*';
         $lines[] = '';
 
@@ -744,6 +752,7 @@ class CheckoutFlow
             return true;
         } catch (\Throwable $e) {
             Log::error('Erro ao enviar resumo final', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -752,10 +761,10 @@ class CheckoutFlow
     {
         $state = $this->flow->getState($phone);
         $patterns = [
-            'name'      => '/^nome\s*:\s*(.+)$/iu',
-            'address'   => '/^endere[cç]o\s*:\s*(.+)$/iu',
+            'name' => '/^nome\s*:\s*(.+)$/iu',
+            'address' => '/^endere[cç]o\s*:\s*(.+)$/iu',
             'reference' => '/^refer[eê]ncia\s*:\s*(.+)$/iu',
-            'email'     => '/^e?-?mail\s*:\s*(.+)$/iu',
+            'email' => '/^e?-?mail\s*:\s*(.+)$/iu',
         ];
 
         foreach ($patterns as $field => $pattern) {
@@ -781,14 +790,15 @@ class CheckoutFlow
 
     public function processPayment(string $phone): bool
     {
-        $state    = $this->flow->getState($phone);
-        $cart     = $state['cart'] ?? [];
-        $storeId  = (string) ($cart['store_id'] ?? '');
+        $state = $this->flow->getState($phone);
+        $cart = $state['cart'] ?? [];
+        $storeId = (string) ($cart['store_id'] ?? '');
         $customer = $state['customer'] ?? [];
 
         if ($storeId === '' || empty($cart['items'])) {
             try {
                 $this->zapiClient->sendText($phone, '🛒 Seu carrinho está vazio. Adicione produtos para finalizar.');
+
                 return true;
             } catch (\Throwable) {
                 return false;
@@ -809,10 +819,10 @@ class CheckoutFlow
 
         // Patch: Always use user_id from state if present
         $customerUser = null;
-        if (!empty($customer['user_id'])) {
-            $customerUser = \App\Models\User::find($customer['user_id']);
+        if (! empty($customer['user_id'])) {
+            $customerUser = User::find($customer['user_id']);
         }
-        if (!$customerUser) {
+        if (! $customerUser) {
             // Fallback: resolve or create user
             $customerUser = $this->resolveCustomerUser(
                 $store?->company_id,
@@ -834,29 +844,29 @@ class CheckoutFlow
             'cart' => $cart,
             'customer' => $customer,
             'checkout' => ['public_token' => $publicToken],
-            'order_code' => $orderCode
+            'order_code' => $orderCode,
         ];
 
         Log::info('Creating order with code '.$orderCode, ['store' => $store?->toArray()]);
 
         $order = Order::query()->create([
-            'code'             => $orderCode,
-            'code_confirm'     => strtoupper(Str::random(5)),
-            'user_id'          => $customerUser?->id,
-            'company_id'       => $store?->company_id,
-            'store_id'         => $store?->id,
-            'product_ids'      => array_values(array_unique(array_merge(
+            'code' => $orderCode,
+            'code_confirm' => strtoupper(Str::random(5)),
+            'user_id' => $customerUser?->id,
+            'company_id' => $store?->company_id,
+            'store_id' => $store?->id,
+            'product_ids' => array_values(array_unique(array_merge(
                 array_map(static fn (array $item): int => (int) $item['product_id'], $items),
                 array_values(array_filter(array_map(static fn (array $item): ?int => $item['extra_product_id'] ?? null, $items)))
             ))),
-            'status'           => 'pending',
-            'payment_status'   => 'pending',
-            'notes'            => (string) ($customer['reference'] ?? ''),
-            'subtotal'         => $subtotal,
-            'delivery_fee'     => $deliveryFee,
-            'total'            => $total,
-            'ordered_at'       => now(),
-            'raw_payload'      => $rawPayload,
+            'status' => 'pending',
+            'payment_status' => 'pending',
+            'notes' => (string) ($customer['reference'] ?? ''),
+            'subtotal' => $subtotal,
+            'delivery_fee' => $deliveryFee,
+            'total' => $total,
+            'ordered_at' => now(),
+            'raw_payload' => $rawPayload,
         ]);
 
         $this->syncUserPhone($customerUser, $this->normalizePhoneForLookup($phone));
@@ -867,13 +877,13 @@ class CheckoutFlow
         );
 
         $paymentLink = $this->buildPaymentLink($phone, $storeId, $cart['items'], $total, $orderCode);
-        $amount      = 'R$ '.number_format($total, 2, ',', '.');
+        $amount = 'R$ '.number_format($total, 2, ',', '.');
 
-        $msgLines   = [];
+        $msgLines = [];
         $msgLines[] = 'Tudo certo com o seu pedido! ✅';
         $msgLines[] = '';
-        $msgLines[] = '🧾 *Pedido:* ' . $orderCode;
-        $msgLines[] = '💰 *Total a pagar:* ' . $amount;
+        $msgLines[] = '🧾 *Pedido:* '.$orderCode;
+        $msgLines[] = '💰 *Total a pagar:* '.$amount;
         $msgLines[] = '';
         $msgLines[] = '🔒 _Aceitamos PIX ou Cartão em ambiente seguro._';
         $msgLines[] = '';
@@ -887,12 +897,12 @@ class CheckoutFlow
             );
 
             // Clear cart, persist order reference in state
-            $state['last_order_code']      = $orderCode;
-            $state['last_order_id']        = $order->id;
+            $state['last_order_code'] = $orderCode;
+            $state['last_order_id'] = $order->id;
             $state['last_checkout_amount'] = $total;
-            $state['last_checkout_at']     = now()->toIso8601String();
-            $state['last_payment_link']    = $paymentLink;
-            
+            $state['last_checkout_at'] = now()->toIso8601String();
+            $state['last_payment_link'] = $paymentLink;
+
             // Save active order for re-entry protection
             $state['active_order'] = [
                 'order_id' => $order->id,
@@ -901,11 +911,11 @@ class CheckoutFlow
                 'payment_status' => 'pending',
                 'payment_link' => $paymentLink,
                 'created_at' => now()->toIso8601String(),
-                'cart_snapshot' => $cart // Preserve cart snapshot for potential reuse
+                'cart_snapshot' => $cart, // Preserve cart snapshot for potential reuse
             ];
-            
-            $state['cart']                 = ['store_id' => $storeId, 'items' => []];
-            $state['checkout_step']        = '';
+
+            $state['cart'] = ['store_id' => $storeId, 'items' => []];
+            $state['checkout_step'] = '';
             $this->saveFlowState($phone, $state);
 
             return true;
@@ -929,7 +939,7 @@ class CheckoutFlow
         // Busca o pedido pelo código
         $order = null;
         if ($orderCode) {
-            $order = \App\Models\Order::where('code', $orderCode)->first();
+            $order = Order::where('code', $orderCode)->first();
         }
 
         // Recupera o token público salvo no raw_payload
@@ -942,7 +952,8 @@ class CheckoutFlow
 
         // Monta o link amigável
         $orderCodePath = $orderCode ?? \Str::ulid()->toBase32();
-        return rtrim($base, '/') . '/' . $orderCodePath . '?token=' . $token;
+
+        return rtrim($base, '/').'/'.$orderCodePath.'?token='.$token;
     }
 
     private function syncUserPhone(?User $user, string $phone): void
@@ -984,26 +995,27 @@ class CheckoutFlow
     public function checkActiveOrderRedirect(string $phone): bool
     {
         $state = $this->flow->getState($phone);
-        
+
         if (empty($state['active_order'])) {
             return false; // No active order, normal flow
         }
-        
+
         $orderData = $state['active_order'];
         $order = Order::find($orderData['order_id']);
-        
-        if (!$order) {
+
+        if (! $order) {
             // Order doesn't exist anymore, clear state
             unset($state['active_order']);
             $this->saveFlowState($phone, $state);
+
             return false;
         }
-        
+
         // Check order status and redirect
-        if ($order->status === 'pending' && $order->payment_status !== 'paid') {
+        if ($order->statusValue() === 'pending' && $order->payment_status !== 'paid') {
             // Pending payment order
             return $this->sendPendingOrderMessage($phone, $order, $orderData['payment_link']);
-        } elseif ($order->status === 'pending' && $order->payment_status === 'paid') {
+        } elseif ($order->statusValue() === 'pending' && $order->payment_status === 'paid') {
             // Paid order, being prepared
             return $this->sendPaidOrderMessage($phone, $order);
         } elseif (in_array($order->status, ['preparing', 'delivering'])) {
@@ -1013,9 +1025,10 @@ class CheckoutFlow
             // Order completed or cancelled, clear active order
             unset($state['active_order']);
             $this->saveFlowState($phone, $state);
+
             return false;
         }
-        
+
         return false;
     }
 
@@ -1026,21 +1039,23 @@ class CheckoutFlow
     {
         $message = "📋 *Você tem um pedido pendente!*\n\n";
         $message .= "🧾 Pedido: #{$order->code}\n";
-        $message .= "💰 Valor: R$ " . number_format($order->total, 2, ',', '.') . "\n";
-        $message .= "⏰ Criado: " . $order->created_at->format('d/m H:i') . "\n\n";
-        $message .= "Deseja finalizar este pedido ou fazer um novo?";
-        
+        $message .= '💰 Valor: R$ '.number_format($order->total, 2, ',', '.')."\n";
+        $message .= '⏰ Criado: '.$order->created_at->format('d/m H:i')."\n\n";
+        $message .= 'Deseja finalizar este pedido ou fazer um novo?';
+
         $buttons = [
-            ['id' => 'order_resume_' . $order->id, 'label' => '🔗 Retomar Pagamento'],
-            ['id' => 'order_new_' . $order->id, 'label' => '🛒 Fazer Novo Pedido'],
-            ['id' => 'order_cancel_' . $order->id, 'label' => '❌ Cancelar Pedido'],
+            ['id' => 'order_resume_'.$order->id, 'label' => '🔗 Retomar Pagamento'],
+            ['id' => 'order_new_'.$order->id, 'label' => '🛒 Fazer Novo Pedido'],
+            ['id' => 'order_cancel_'.$order->id, 'label' => '❌ Cancelar Pedido'],
         ];
-        
+
         try {
             $this->zapiClient->sendButtonActions($phone, $message, $buttons);
+
             return true;
         } catch (\Throwable $e) {
             Log::error('Failed to send pending order message', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1052,15 +1067,17 @@ class CheckoutFlow
     {
         $message = "🎉 *Seu pedido está sendo preparado!*\n\n";
         $message .= "🧾 Pedido: #{$order->code}\n";
-        $message .= "💰 Valor pago: R$ " . number_format($order->total, 2, ',', '.') . "\n";
-        $message .= "⏰ Status: " . $this->getStatusDescription($order->status) . "\n\n";
-        $message .= "Seu pedido já está na cozinha! Em breve estará a caminho. 🍔🛵";
-        
+        $message .= '💰 Valor pago: R$ '.number_format($order->total, 2, ',', '.')."\n";
+        $message .= '⏰ Status: '.$this->getStatusDescription($order->statusValue())."\n\n";
+        $message .= 'Seu pedido já está na cozinha! Em breve estará a caminho. 🍔🛵';
+
         try {
             $this->zapiClient->sendText($phone, $message);
+
             return true;
         } catch (\Throwable $e) {
             Log::error('Failed to send paid order message', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1074,24 +1091,26 @@ class CheckoutFlow
             'preparing' => '🏃‍♂️ Em preparação',
             'delivering' => '🛵 Saiu para entrega',
         ];
-        
+
         $statusDesc = $statusMap[$order->status] ?? 'Em andamento';
-        
+
         $message = "📦 *Seu pedido está a caminho!*\n\n";
         $message .= "🧾 Pedido: #{$order->code}\n";
         $message .= "📍 Status: {$statusDesc}\n";
-        
-        if ($order->status === 'delivering' && $order->courier) {
-            $message .= "🚚 Entregador: " . $order->courier->name . "\n";
+
+        if ($order->statusValue() === 'delivering' && $order->courier) {
+            $message .= '🚚 Entregador: '.$order->courier->name."\n";
         }
-        
+
         $message .= "\nAcompanhe pelo painel ou aguarde a chegada!";
-        
+
         try {
             $this->zapiClient->sendText($phone, $message);
+
             return true;
         } catch (\Throwable $e) {
             Log::error('Failed to send in-progress order message', ['error' => $e->getMessage()]);
+
             return false;
         }
     }
@@ -1110,7 +1129,7 @@ class CheckoutFlow
             'done' => '🎉 Entregue',
             'cancelled' => '❌ Cancelado',
         ];
-        
+
         return $descriptions[$status] ?? $status;
     }
 }

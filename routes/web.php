@@ -191,6 +191,7 @@ Route::middleware(['auth:api', 'role:master'])->prefix('master')->as('api.master
     Route::get('/operations', [MasterOperationController::class, 'index']);
     Route::post('/operations', [MasterOperationController::class, 'store']);
     Route::patch('/operations/{operation}', [MasterOperationController::class, 'update']);
+    Route::delete('/operations/{operation}', [MasterOperationController::class, 'destroy']);
     Route::post('/operations/{operation}/session', [MasterOperationController::class, 'connectSession']);
     Route::get('/operations/{operation}/session/qrcode', [MasterOperationController::class, 'sessionQr']);
     Route::get('/operations/{operation}/session/status', [MasterOperationController::class, 'sessionStatus']);

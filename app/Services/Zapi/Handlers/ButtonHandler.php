@@ -2,17 +2,15 @@
 
 namespace App\Services\Zapi\Handlers;
 
+use App\Models\Order;
+use App\Models\Product;
 use App\Services\Whatsapp\WhatsAppClientInterface;
-use App\Services\Zapi\Flows\FlowManager;
-use App\Services\Zapi\Flows\GreetingFlow;
 use App\Services\Zapi\Flows\CartFlow;
 use App\Services\Zapi\Flows\CheckoutFlow;
-use App\Services\Zapi\Handlers\StoreHandle;
-use App\Services\Zapi\Handlers\ProductsHandler;
-use App\Services\Zapi\Handlers\CategoriesHandle;
-use App\Models\Product;
-use Illuminate\Support\Facades\Log;
+use App\Services\Zapi\Flows\FlowManager;
+use App\Services\Zapi\Flows\GreetingFlow;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Support\Facades\Log;
 
 class ButtonHandler
 {
@@ -25,8 +23,7 @@ class ButtonHandler
         private StoreHandle $storeHandle,
         private ProductsHandler $productsHandler,
         private CategoriesHandle $categoriesHandle
-    ) {
-    }
+    ) {}
 
     public function handle(string $phone, string $buttonId): bool
     {
@@ -38,6 +35,7 @@ class ButtonHandler
         // Se a chave existir no cache, significa que já estamos processando esse clique
         if (Cache::has($lockKey)) {
             Log::info('Clique duplicado ignorado', ['phone' => $phone, 'buttonId' => $buttonId]);
+
             return true; // Retornamos true para o Webhook não tentar reenviar
         }
 
@@ -53,6 +51,7 @@ class ButtonHandler
                 return true;
             }
             Log::info("Button ID {$buttonId} não mapeado como fluxo, tentando intent genérica...");
+
             return $this->handleCommerceReplyIntent($phone, $buttonId);
         } catch (\Throwable $e) {
             // Se der erro, removemos a trava para o usuário poder tentar de novo
@@ -62,6 +61,7 @@ class ButtonHandler
                 'buttonId' => $buttonId,
                 'error' => $e->getMessage(),
             ]);
+
             return false;
         }
     }
@@ -71,8 +71,8 @@ class ButtonHandler
         $lockKey = "lock:order:{$orderId}";
 
         // 1. Tenta obter o lock no Redis (expira em 30s por segurança)
-        if (!Redis::set($lockKey, 'locked', 'NX', 'EX', 30)) {
-            return $this->zapiClient->sendText($phone, "❌ Este pedido já foi aceito por outro colega.");
+        if (! Redis::set($lockKey, 'locked', 'NX', 'EX', 30)) {
+            return $this->zapiClient->sendText($phone, '❌ Este pedido já foi aceito por outro colega.');
         }
 
         try {
@@ -84,7 +84,7 @@ class ButtonHandler
         ", [$driverId, $orderId]);
 
             if ($affected === 0) {
-                return $this->zapiClient->sendText($phone, "❌ Tarde demais! Outro entregador foi mais rápido.");
+                return $this->zapiClient->sendText($phone, '❌ Tarde demais! Outro entregador foi mais rápido.');
             }
 
             // 3. Sucesso! Notifica o vencedor no privado
@@ -107,6 +107,7 @@ class ButtonHandler
                 // Salva no Redis que este motoboy está na tela de digitar código (Expira em 2 horas)
                 \Illuminate\Support\Facades\Redis::set("waiting_code:{$phone}", $orderId, 'EX', 7200);
                 $this->zapiClient->sendText($phone, "🔑 *Informe o código do cliente!*\n\nPeça ao cliente o codigo de 5 caracteres e *digite aqui* para finalizar a entrega:");
+
                 return true;
             }
         }
@@ -152,16 +153,16 @@ class ButtonHandler
         // NOVO PEDIDO: order_new_{id} - Fazer novo pedido (limpa sessão atual)
         if (str_starts_with($buttonId, 'order_new_')) {
             $orderId = (int) str_replace('order_new_', '', $buttonId);
-            
+
             // Clear current state (including active_order)
             $this->flow->resetState($phone);
-            
+
             // Optional: mark previous order as abandoned
-            $order = \App\Models\Order::find($orderId);
-            if ($order && $order->status === 'pending' && $order->payment_status !== 'paid') {
+            $order = Order::find($orderId);
+            if ($order && $order->statusValue() === 'pending' && $order->payment_status !== 'paid') {
                 $order->update(['status' => 'cancelled', 'rejection_reason' => 'abandoned']);
             }
-            
+
             // Start fresh flow
             return $this->greetingFlow->sendWelcomePrompt($phone);
         }
@@ -169,17 +170,18 @@ class ButtonHandler
         // RETOMAR PAGAMENTO: order_resume_{id} - Reenviar link de pagamento
         if (str_starts_with($buttonId, 'order_resume_')) {
             $orderId = (int) str_replace('order_resume_', '', $buttonId);
-            $order = \App\Models\Order::find($orderId);
-            
-            if (!$order) {
-                $this->zapiClient->sendText($phone, "❌ Pedido não encontrado.");
+            $order = Order::find($orderId);
+
+            if (! $order) {
+                $this->zapiClient->sendText($phone, '❌ Pedido não encontrado.');
+
                 return true;
             }
-            
+
             // Get payment link from state or regenerate
             $state = $this->flow->getState($phone);
             $paymentLink = $state['active_order']['payment_link'] ?? $state['last_payment_link'] ?? '';
-            
+
             if (empty($paymentLink)) {
                 // Regenerate payment link
                 $paymentLink = $this->checkoutFlow->buildPaymentLink(
@@ -190,45 +192,48 @@ class ButtonHandler
                     $order->code
                 );
             }
-            
+
             $message = "🔗 *Link de pagamento reenviado!*\n\n";
             $message .= "🧾 Pedido: #{$order->code}\n";
-            $message .= "💰 Valor: R$ " . number_format($order->total, 2, ',', '.') . "\n\n";
-            $message .= "Clique no botão abaixo para pagar:";
-            
+            $message .= '💰 Valor: R$ '.number_format($order->total, 2, ',', '.')."\n\n";
+            $message .= 'Clique no botão abaixo para pagar:';
+
             $this->zapiClient->sendButtonActions(
                 $phone,
                 $message,
                 [['type' => 'URL', 'url' => $paymentLink, 'label' => '🔗 Abrir link de pagamento']]
             );
-            
+
             return true;
         }
 
         // CANCELAR PEDIDO: order_cancel_{id} - Cancelar pedido pendente
         if (str_starts_with($buttonId, 'order_cancel_')) {
             $orderId = (int) str_replace('order_cancel_', '', $buttonId);
-            $order = \App\Models\Order::find($orderId);
-            
-            if (!$order) {
-                $this->zapiClient->sendText($phone, "❌ Pedido não encontrado.");
+            $order = Order::find($orderId);
+
+            if (! $order) {
+                $this->zapiClient->sendText($phone, '❌ Pedido não encontrado.');
+
                 return true;
             }
-            
-            if ($order->status !== 'pending' || $order->payment_status === 'paid') {
-                $this->zapiClient->sendText($phone, "❌ Este pedido não pode ser cancelado (já pago ou em andamento).");
+
+            if ($order->statusValue() !== 'pending' || $order->payment_status === 'paid') {
+                $this->zapiClient->sendText($phone, '❌ Este pedido não pode ser cancelado (já pago ou em andamento).');
+
                 return true;
             }
-            
+
             // Cancel order
             $order->update(['status' => 'cancelled', 'rejection_reason' => 'customer_cancelled']);
-            
+
             // Clear active order from state
             $state = $this->flow->getState($phone);
             unset($state['active_order']);
             $this->flow->saveState($phone, $state);
-            
+
             $this->zapiClient->sendText($phone, "✅ Pedido #{$order->code} cancelado com sucesso!\n\nDigite *oi* para fazer um novo pedido.");
+
             return true;
         }
 
@@ -244,13 +249,15 @@ class ButtonHandler
             // Busca o produto para saber de qual loja ele é e reiniciar o fluxo
             $product = Product::with('store')->find($productId);
             if ($product && $product->store) {
-                return $this->cartFlow->startAddProductFlow($phone, $product->store->slug, (string)$productId);
+                return $this->cartFlow->startAddProductFlow($phone, $product->store->slug, (string) $productId);
             }
+
             return false;
         }
 
         if (str_starts_with($buttonId, 'cart_remove_')) {
             $index = (int) str_replace('cart_remove_', '', $buttonId);
+
             return $this->cartFlow->removeItem($phone, $index);
         }
 
@@ -340,8 +347,8 @@ class ButtonHandler
         // Padrão: flow_add{qty}_{storeSlug}_{productId}
         if (preg_match('/^flow_add([123])_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
             return [
-                'quantity'   => (int) $matches[1],
-                'store_id'   => $matches[2],
+                'quantity' => (int) $matches[1],
+                'store_id' => $matches[2],
                 'product_id' => (int) $matches[3],
             ];
         }
@@ -349,8 +356,8 @@ class ButtonHandler
         // Padrão simples: flow_add_{storeSlug}_{productId}
         if (preg_match('/^flow_add_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
             return [
-                'quantity'   => 1,
-                'store_id'   => $matches[1],
+                'quantity' => 1,
+                'store_id' => $matches[1],
                 'product_id' => (int) $matches[2],
             ];
         }
@@ -361,6 +368,7 @@ class ButtonHandler
     private function handleCommerceReplyIntent(string $phone, string $buttonId): bool
     {
         Log::info("Botão não mapeado recebido: {$buttonId} de {$phone}");
+
         return false;
     }
 }

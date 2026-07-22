@@ -48,10 +48,10 @@ class PizzaConfigService
     public function updateSize(StorePizzaSize $size, array $data): StorePizzaSize
     {
         $size->fill([
-            'name' => $data['name'] ?? $size->name,
-            'slice_count' => $data['slice_count'] ?? $size->slice_count,
-            'max_flavors' => $data['max_flavors'] ?? $size->max_flavors,
-            'is_active' => $data['is_active'] ?? $size->is_active,
+            'name' => array_key_exists('name', $data) ? $data['name'] : $size->name,
+            'slice_count' => array_key_exists('slice_count', $data) ? $data['slice_count'] : $size->slice_count,
+            'max_flavors' => array_key_exists('max_flavors', $data) ? $data['max_flavors'] : $size->max_flavors,
+            'is_active' => array_key_exists('is_active', $data) ? $data['is_active'] : $size->is_active,
         ]);
         $size->save();
 
@@ -95,6 +95,15 @@ class PizzaConfigService
 
     public function reorderSizes(Store $store, array $orderedIds): void
     {
+        $storeSizeIds = $store->pizzaSizes()->pluck('id')->map(fn ($id) => (int) $id)->all();
+        $orderedIds = array_map('intval', $orderedIds);
+
+        if (count($orderedIds) !== count($storeSizeIds) || array_diff($orderedIds, $storeSizeIds)) {
+            throw ValidationException::withMessages([
+                'ordered_ids' => 'A ordenação deve conter somente os tamanhos desta loja.',
+            ]);
+        }
+
         foreach (array_values($orderedIds) as $index => $sizeId) {
             StorePizzaSize::query()
                 ->where('store_id', $store->id)

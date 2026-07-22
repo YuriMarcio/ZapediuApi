@@ -35,7 +35,25 @@ class WalletController extends Controller
             'mp_integration' => $wallet->hasMpIntegration(),
             'can_withdraw' => $wallet->canWithdraw(),
             'plan_id' => $wallet->plan_id,
+            'mp_client_id' => $this->mercadoPagoOAuthConfigured() ? config('services.mercadopago.client_id') : null,
+            'mp_redirect_uri' => $this->mercadoPagoOAuthConfigured() ? config('services.mercadopago.redirect_uri') : null,
         ]);
+    }
+
+    /**
+     * O .env deste projeto usa strings de exemplo ("seu_client_id_aqui", "seu-dominio")
+     * como placeholder até o lojista/admin configurar credenciais reais do Mercado Pago.
+     * Sem isso, o botão de conectar não deve ficar habilitado no painel.
+     */
+    private function mercadoPagoOAuthConfigured(): bool
+    {
+        $clientId = (string) config('services.mercadopago.client_id');
+        $redirectUri = (string) config('services.mercadopago.redirect_uri');
+
+        return $clientId !== ''
+            && $redirectUri !== ''
+            && ! str_contains($clientId, 'seu_')
+            && ! str_contains($redirectUri, 'seu-dominio');
     }
 
     /**

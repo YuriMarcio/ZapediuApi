@@ -44,6 +44,13 @@ class MasterOperationController extends Controller
         return response()->json(['data' => $operation->refresh()]);
     }
 
+    public function destroy(Operation $operation): JsonResponse
+    {
+        $operation->delete();
+
+        return response()->json(['message' => 'Operação removida com sucesso.']);
+    }
+
     public function createManager(Request $request): JsonResponse
     {
         $data = $request->validate(['type' => ['required', Rule::in(['commercial','delivery'])], 'name' => ['required','string','max:255'], 'email' => ['required','email', Rule::unique('users','email')], 'phone' => ['nullable','string','max:30'], 'operation_ids' => ['required','array','min:1'], 'operation_ids.*' => ['integer', Rule::exists('operations','id')]]);
