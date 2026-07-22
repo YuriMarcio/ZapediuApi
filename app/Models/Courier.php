@@ -12,6 +12,7 @@ class Courier extends Model
 
     protected $fillable = [
         'first_name',
+        'operation_id',
         'last_name',
         'full_name',
         'cpf',

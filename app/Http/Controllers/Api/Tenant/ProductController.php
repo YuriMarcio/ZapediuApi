@@ -74,6 +74,7 @@ class ProductController extends Controller
 
         $data = $product->toArray();
         $data['optional_flow_id'] = $product->optionalFlows->first()?->id;
+        $data['pizza_addon_option_ids'] = $product->optionalFlowStepOptions()->pluck('optional_flow_step_options.id');
 
         return response()->json($data);
     }
@@ -104,5 +105,26 @@ class ProductController extends Controller
         $this->stockService->deleteProduct($product, $request);
 
         return response()->json(['message' => 'Produto removido com sucesso.']);
+    }
+
+    /**
+     * PUT /tenant/products/{product}/pizza-addons
+     *
+     * Sincroniza o vínculo item-a-item de bordas/ingredientes/molhos desse sabor
+     * (seção 13 da spec de pizzaria). Body: { option_ids: number[] } — lista vazia
+     * equivale a "Remover todos".
+     */
+    public function updatePizzaAddons(Request $request, Product $product): JsonResponse
+    {
+        $data = $request->validate([
+            'option_ids' => ['present', 'array'],
+            'option_ids.*' => ['integer', 'exists:optional_flow_step_options,id'],
+        ]);
+
+        $product->optionalFlowStepOptions()->sync($data['option_ids']);
+
+        return response()->json([
+            'data' => $product->optionalFlowStepOptions()->get(['optional_flow_step_options.id']),
+        ]);
     }
 }

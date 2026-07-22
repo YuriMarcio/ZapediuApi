@@ -4,6 +4,7 @@ namespace App\Services\Zapi\Flows;
 
 // 1. Imports corrigidos (Problemas 3 e 4)
 use App\Models\Store;
+use App\Models\StorePizzaSize;
 use App\Models\Product;
 use App\Models\ProductVariation;
 use App\Models\OptionalFlow;
@@ -14,6 +15,7 @@ use App\Models\UserPhone;
 use App\Models\UserAddress;
 use App\Jobs\Whatsapp\AdvanceCustomizationStepJob;
 use App\Jobs\Whatsapp\SendCartFeedbackJob; // Importando o Job
+use App\Services\Pizzaria\PizzaPricingResolver;
 use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
@@ -27,7 +29,8 @@ class CartFlow
     public function __construct(
         private FlowManager $flow,
         private WhatsAppClientInterface $zapiClient,
-        private StoreHandle $storeHandle
+        private StoreHandle $storeHandle,
+        private PizzaPricingResolver $pizzaPricing
     ) {
     }
 
@@ -270,7 +273,28 @@ class CartFlow
         $store = Store::query()->where('slug', $storeId)->first();
         $product = Product::query()->where('id', $productId)->first();
 
-        if ($store !== null && $product !== null && $store->usesFlavorComboFlow() && $product->available_for_combo) {
+        // Lojas pizzaria (motor avançado): o limite de sabores é do TAMANHO escolhido, não
+        // mais um número único por loja. Açaiteria/outros seguem exatamente como antes
+        // (usesFlavorComboFlow() lê store.max_flavors, inalterado).
+        $isPizzaAdvanced = $store !== null && $store->isPizzaAdvancedStore();
+        $sizeMaxFlavors = 2;
+        $storePizzaSizeId = null;
+
+        if ($isPizzaAdvanced) {
+            $variation = ProductVariation::find($variationId);
+            $sizeModel = $variation?->store_pizza_size_id !== null
+                ? StorePizzaSize::find($variation->store_pizza_size_id)
+                : null;
+
+            if ($sizeModel !== null) {
+                $storePizzaSizeId = $sizeModel->id;
+                $sizeMaxFlavors = (int) $sizeModel->max_flavors;
+            }
+        }
+
+        $allowsCombo = $isPizzaAdvanced ? $sizeMaxFlavors >= 2 : ($store !== null && $store->usesFlavorComboFlow());
+
+        if ($store !== null && $product !== null && $allowsCombo && $product->available_for_combo) {
             $hasOtherFlavors = $product->category_id !== null && Product::query()
                 ->where('is_active', true)
                 ->where('store_id', $store->id)
@@ -280,6 +304,10 @@ class CartFlow
                 ->exists();
 
             if ($hasOtherFlavors) {
+                $firstFlavorPrice = $isPizzaAdvanced && $storePizzaSizeId !== null
+                    ? ($this->pizzaPricing->resolveFlavorPrice($product, StorePizzaSize::find($storePizzaSizeId))['price'] ?? 0.0)
+                    : ((float) $product->price + $variationAdditionalPrice);
+
                 $state = $this->getState($phone);
                 $state['pending_add'] = [
                     'store_id'                   => $storeId,
@@ -289,15 +317,23 @@ class CartFlow
                     'variation_additional_price' => $variationAdditionalPrice,
                     'quantity'                   => $quantity,
                     'step'                       => 'extra_flavor_ask',
+                    'store_pizza_size_id'        => $storePizzaSizeId,
+                    'max_flavors'                => $sizeMaxFlavors,
+                    'flavors'                    => [
+                        ['product_id' => $productId, 'name' => $product->name, 'price' => $firstFlavorPrice],
+                    ],
                 ];
                 $this->saveFlowState($phone, $state);
 
                 $flavorLabel = $product->name.' ('.$variationName.')';
+                $prompt = $isPizzaAdvanced && $sizeMaxFlavors > 2
+                    ? "🍕 *{$flavorLabel}*\nDeseja adicionar mais algum sabor nessa pizza? (1 de {$sizeMaxFlavors})"
+                    : "🍕 *{$flavorLabel}*\nDeseja adicionar mais algum sabor nessa pizza?";
 
                 try {
                     $this->zapiClient->sendButtonActions(
                         $phone,
-                        "🍕 *{$flavorLabel}*\nDeseja adicionar mais algum sabor nessa pizza?",
+                        $prompt,
                         [
                             ['id' => 'flow_pizza_extra_yes', 'label' => '✅ Sim'],
                             ['id' => 'flow_pizza_extra_no', 'label' => '❌ Não'],
@@ -327,7 +363,17 @@ class CartFlow
             return false;
         }
 
+        // Só existe combo de fato depois de pelo menos 1 sabor extra escolhido. Se o cliente
+        // disser "não" antes de escolher qualquer extra, é só o sabor base — sem preço de
+        // combo. Se já tinha escolhido extras e agora diz "não" (ou não sobrou mais sabor
+        // pra oferecer), precisa FINALIZAR o combo com o que já foi escolhido.
+        $hasExtrasAlready = count($pending['flavors'] ?? []) > 1;
+
         if (! $wantsExtra) {
+            if ($hasExtrasAlready) {
+                return $this->finalizeFlavorCombo($phone, $state, $pending);
+            }
+
             return $this->beginCustomizationOrCommit(
                 $phone,
                 (string) $pending['store_id'],
@@ -346,16 +392,22 @@ class CartFlow
             return false;
         }
 
+        $alreadyPickedIds = collect($pending['flavors'] ?? [])->pluck('product_id')->push($product->id)->unique();
+
         $siblings = Product::query()
             ->where('is_active', true)
             ->where('store_id', $store->id)
             ->where('category_id', $product->category_id)
-            ->where('id', '!=', $product->id)
+            ->whereNotIn('id', $alreadyPickedIds)
             ->where('available_for_combo', true)
             ->orderBy('name')
             ->get();
 
         if ($siblings->isEmpty()) {
+            if ($hasExtrasAlready) {
+                return $this->finalizeFlavorCombo($phone, $state, $pending);
+            }
+
             return $this->beginCustomizationOrCommit(
                 $phone,
                 (string) $pending['store_id'],
@@ -387,8 +439,11 @@ class CartFlow
     }
 
     /**
-     * Sabor extra escolhido no carrossel: resolve o preço combinado (sempre o sabor mais
-     * caro no mesmo tamanho já escolhido) e segue pro fluxo de borda/customização.
+     * Sabor extra escolhido no carrossel. Em lojas pizzaria (motor avançado), acumula até o
+     * limite de sabores do tamanho escolhido, perguntando de novo a cada sabor adicionado; em
+     * açaiteria/outros, mantém o comportamento histórico (no máximo 1 sabor extra, finaliza
+     * na hora). O preço final segue a regra da loja (sabor mais caro — padrão e único modo
+     * pra açaiteria — ou média, só disponível pro motor avançado de pizzaria).
      */
     public function handleExtraFlavorPicked(string $phone, string $extraProductId): bool
     {
@@ -409,32 +464,87 @@ class CartFlow
             return false;
         }
 
+        $store = Store::query()->where('slug', (string) $pending['store_id'])->first();
+        $isPizzaAdvanced = $store !== null && $store->isPizzaAdvancedStore();
+        $storePizzaSizeId = $pending['store_pizza_size_id'] ?? null;
         $variationName = (string) $pending['variation_name'];
 
-        $matchingVariation = $extraProduct->variations
-            ->first(fn (ProductVariation $v): bool => (bool) $v->is_active
-                && mb_strtolower(trim((string) $v->name)) === mb_strtolower(trim($variationName)));
+        if ($isPizzaAdvanced && $storePizzaSizeId !== null) {
+            $size = StorePizzaSize::find($storePizzaSizeId);
+            $extraFlavorPrice = $size !== null
+                ? ($this->pizzaPricing->resolveFlavorPrice($extraProduct, $size)['price'] ?? 0.0)
+                : 0.0;
+        } else {
+            // Açaiteria/outros: preço = base do produto + additional_price da variação com o
+            // mesmo nome do tamanho já escolhido (comportamento histórico, inalterado).
+            $matchingVariation = $extraProduct->variations
+                ->first(fn (ProductVariation $v): bool => (bool) $v->is_active
+                    && mb_strtolower(trim((string) $v->name)) === mb_strtolower(trim($variationName)));
 
-        $firstFlavorEffectivePrice = (float) $pending['variation_additional_price']
-            + (float) (Product::query()->where('id', (int) $pending['product_id'])->value('price') ?? 0);
+            if ($matchingVariation === null) {
+                Log::warning('Sabor extra sem variação de tamanho correspondente — usando preço base.', [
+                    'extra_product_id' => $extraProduct->id,
+                    'variation_name'   => $variationName,
+                ]);
+            }
 
-        $extraFlavorEffectivePrice = (float) $extraProduct->price
-            + ($matchingVariation !== null ? (float) $matchingVariation->additional_price : 0.0);
-
-        if ($matchingVariation === null) {
-            Log::warning('Sabor extra sem variação de tamanho correspondente — usando preço base.', [
-                'extra_product_id' => $extraProduct->id,
-                'variation_name'   => $variationName,
-            ]);
+            $extraFlavorPrice = (float) $extraProduct->price
+                + ($matchingVariation !== null ? (float) $matchingVariation->additional_price : 0.0);
         }
 
-        $comboPrice = max($firstFlavorEffectivePrice, $extraFlavorEffectivePrice);
+        $flavors = $pending['flavors'] ?? [];
+        $flavors[] = ['product_id' => $extraProduct->id, 'name' => (string) $extraProduct->name, 'price' => $extraFlavorPrice];
+        $maxFlavors = (int) ($pending['max_flavors'] ?? 2);
+
+        $pending['flavors'] = $flavors;
+
+        if (count($flavors) < $maxFlavors) {
+            // Ainda cabe mais um sabor nesse tamanho: pergunta de novo em vez de finalizar.
+            $state['pending_add'] = $pending;
+            $this->saveFlowState($phone, $state);
+
+            try {
+                $this->zapiClient->sendButtonActions(
+                    $phone,
+                    '🍕 Sabor adicionado! Deseja incluir mais um? ('.count($flavors)." de {$maxFlavors})",
+                    [
+                        ['id' => 'flow_pizza_extra_yes', 'label' => '✅ Sim'],
+                        ['id' => 'flow_pizza_extra_no', 'label' => '❌ Não'],
+                    ]
+                );
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send extra flavor loop prompt.', ['error' => $exception->getMessage()]);
+                // segue pra finalização em vez de travar o cliente
+            }
+        }
+
+        return $this->finalizeFlavorCombo($phone, $state, $pending);
+    }
+
+    /**
+     * Fecha a escolha de sabores (limite atingido ou cliente disse "não"): calcula o preço
+     * final conforme a regra da loja e segue pro fluxo de borda/customização.
+     */
+    private function finalizeFlavorCombo(string $phone, array $state, array $pending): bool
+    {
+        $store = Store::query()->where('slug', (string) $pending['store_id'])->first();
+        $rule = $store !== null && $store->isPizzaAdvancedStore() ? $store->pizzaFlavorPriceRule() : 'most_expensive';
+
+        $flavors = $pending['flavors'] ?? [];
+        $prices = collect($flavors)->pluck('price')->map(fn ($price) => (float) $price)->all();
+        $comboPrice = $this->pizzaPricing->resolveComboPrice($prices, $rule);
+
+        $extraFlavors = collect($flavors)->slice(1)->values();
+        $extraProductId = $extraFlavors->isNotEmpty() ? (int) $extraFlavors->last()['product_id'] : null;
+        $extraProductName = $extraFlavors->isNotEmpty() ? $extraFlavors->pluck('name')->implode(' + ') : null;
 
         $state['pending_add'] = array_merge($pending, [
-            'step'                => null,
-            'extra_product_id'    => $extraProduct->id,
-            'extra_product_name'  => (string) $extraProduct->name,
-            'combo_base_price'    => $comboPrice,
+            'step'               => null,
+            'extra_product_id'   => $extraProductId,
+            'extra_product_name' => $extraProductName,
+            'combo_base_price'   => $comboPrice,
         ]);
         $this->saveFlowState($phone, $state);
 
@@ -443,11 +553,11 @@ class CartFlow
             (string) $pending['store_id'],
             (int) $pending['product_id'],
             (int) $pending['variation_id'],
-            $variationName,
+            (string) $pending['variation_name'],
             0.0, // preço já embutido em combo_base_price
             (int) $pending['quantity'],
-            $extraProduct->id,
-            (string) $extraProduct->name,
+            $extraProductId,
+            $extraProductName,
             $comboPrice
         );
     }
@@ -496,10 +606,7 @@ class CartFlow
         ];
 
         if ($steps->isEmpty()) {
-            return $this->commitAndSendFeedback(
-                $phone, $storeId, $productId, $variationId, $variationName, $variationAdditionalPrice,
-                $quantity, [], $extraProductId, $extraProductName, $overrideBasePrice
-            );
+            return $this->finishCustomizationAndCommit($phone, $state, $pendingAdd, []);
         }
 
         // Lojas de pizzaria/açaiteria: pergunta explicitamente "quer borda?" antes de mostrar
@@ -581,17 +688,59 @@ class CartFlow
                     ->pluck('id')
             )->unique();
 
-        if ($flowIds->isEmpty()) {
-            return collect();
-        }
-
-        return OptionalFlowStep::query()
+        $legacySteps = $flowIds->isEmpty() ? collect() : OptionalFlowStep::query()
             ->whereIn('optional_flow_id', $flowIds)
             ->with(['options' => fn ($q) => $q->where('is_active', true)->orderBy('position')])
             ->orderBy('position')
-            ->get()
+            ->get();
+
+        $store = $product->store;
+
+        if ($store === null || ! $store->isPizzaAdvancedStore()) {
+            return $legacySteps->filter(fn (OptionalFlowStep $step): bool => $step->options->isNotEmpty())->values();
+        }
+
+        return $legacySteps
+            ->concat($this->resolvePizzaCustomizationSteps($store, $product))
             ->filter(fn (OptionalFlowStep $step): bool => $step->options->isNotEmpty())
             ->values();
+    }
+
+    /**
+     * Steps dos 3 fluxos auto-provisionados de pizzaria (bordas/ingredientes/molhos):
+     * respeita o toggle de cada recurso (§4) e o vínculo item-a-item do sabor (§13) — só
+     * mostra opções explicitamente ligadas a ESSE produto, não tudo que a loja cadastrou.
+     */
+    private function resolvePizzaCustomizationSteps(Store $store, Product $product): Collection
+    {
+        $settings = $store->pizzaSettings();
+        $featureSettingKeys = ['borda' => 'bordas', 'ingrediente' => 'ingredientes', 'molho' => 'molhos'];
+
+        $enabledFeatureTypes = collect($featureSettingKeys)
+            ->filter(fn (string $settingKey) => (bool) ($settings['features'][$settingKey] ?? true))
+            ->keys();
+
+        if ($enabledFeatureTypes->isEmpty()) {
+            return collect();
+        }
+
+        $pizzaFlowIds = OptionalFlow::query()
+            ->where('store_id', $store->id)
+            ->whereIn('feature_type', $enabledFeatureTypes)
+            ->where('is_active', true)
+            ->pluck('id');
+
+        if ($pizzaFlowIds->isEmpty()) {
+            return collect();
+        }
+
+        $linkedOptionIds = $product->optionalFlowStepOptions()->pluck('optional_flow_step_options.id');
+
+        return OptionalFlowStep::query()
+            ->whereIn('optional_flow_id', $pizzaFlowIds)
+            ->with(['options' => fn ($q) => $q->where('is_active', true)->whereIn('id', $linkedOptionIds)->orderBy('position')])
+            ->orderBy('position')
+            ->get();
     }
 
     /**
@@ -845,6 +994,73 @@ class CartFlow
             }
         }
 
+        return $this->finishCustomizationAndCommit($phone, $state, $pending, $customizations);
+    }
+
+    /**
+     * Ponto único de saída do motor de customização (chamado tanto quando o produto não tem
+     * nenhum step aplicável quanto quando a fila de steps termina): em lojas pizzaria com
+     * "Observações do cliente" ativado, pergunta a observação antes de comitar; caso
+     * contrário, comita direto — comportamento padrão, inalterado.
+     */
+    private function finishCustomizationAndCommit(string $phone, array $state, array $pendingAdd, array $customizations): bool
+    {
+        $store = Store::query()->where('slug', (string) ($pendingAdd['store_id'] ?? ''))->first();
+
+        if ($store !== null && $store->isPizzaAdvancedStore() && $store->pizzaFeatureEnabled('observacoes')
+            && empty($pendingAdd['awaiting_observation'])) {
+            $pendingAdd['selections'] = [];
+            $pendingAdd['resolved_customizations'] = $customizations;
+            $pendingAdd['awaiting_observation'] = true;
+            $state['pending_add'] = $pendingAdd;
+            $this->saveFlowState($phone, $state);
+
+            try {
+                $this->zapiClient->sendText($phone, '📝 Deseja deixar alguma observação para este item? Responda com o texto, ou envie *pular*.');
+
+                return true;
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send observation prompt.', ['error' => $exception->getMessage()]);
+                // segue pra comitar direto em vez de travar o cliente
+            }
+        }
+
+        unset($state['pending_add']);
+        $this->saveFlowState($phone, $state);
+
+        return $this->commitAndSendFeedback(
+            $phone,
+            (string) ($pendingAdd['store_id'] ?? ''),
+            (int) ($pendingAdd['product_id'] ?? 0),
+            $pendingAdd['variation_id'] ?? null,
+            $pendingAdd['variation_name'] ?? null,
+            (float) ($pendingAdd['variation_additional_price'] ?? 0.0),
+            (int) ($pendingAdd['quantity'] ?? 1),
+            $customizations,
+            isset($pendingAdd['extra_product_id']) ? (int) $pendingAdd['extra_product_id'] : null,
+            $pendingAdd['extra_product_name'] ?? null,
+            isset($pendingAdd['override_base_price']) ? (float) $pendingAdd['override_base_price'] : null
+        );
+    }
+
+    /**
+     * Texto livre recebido enquanto o carrinho aguarda a observação do cliente (só acontece
+     * em lojas pizzaria com o recurso "Observações do cliente" ativado — ver
+     * commitPendingCustomization). Chamado pelo TextHandler antes do checkout_step.
+     */
+    public function handleObservationTextInput(string $phone, string $text): bool
+    {
+        $state = $this->getState($phone);
+        $pending = $state['pending_add'] ?? null;
+
+        if (! is_array($pending) || empty($pending['awaiting_observation'])) {
+            return false;
+        }
+
+        $trimmed = trim($text);
+        $isSkip = in_array(mb_strtolower($trimmed), ['pular', 'não', 'nao', 'skip', 'n'], true);
+        $observation = (! $isSkip && $trimmed !== '') ? $trimmed : null;
+
         unset($state['pending_add']);
         $this->saveFlowState($phone, $state);
 
@@ -856,10 +1072,11 @@ class CartFlow
             $pending['variation_name'] ?? null,
             (float) ($pending['variation_additional_price'] ?? 0.0),
             (int) ($pending['quantity'] ?? 1),
-            $customizations,
+            $pending['resolved_customizations'] ?? [],
             isset($pending['extra_product_id']) ? (int) $pending['extra_product_id'] : null,
             $pending['extra_product_name'] ?? null,
-            isset($pending['override_base_price']) ? (float) $pending['override_base_price'] : null
+            isset($pending['override_base_price']) ? (float) $pending['override_base_price'] : null,
+            $observation
         );
     }
 
@@ -994,7 +1211,8 @@ class CartFlow
         array $customizations = [],
         ?int $extraProductId = null,
         ?string $extraProductName = null,
-        ?float $overrideBasePrice = null
+        ?float $overrideBasePrice = null,
+        ?string $observation = null
     ): bool {
         $lock = Cache::lock('zapi:cart:lock:' . $phone, 10);
 
@@ -1046,7 +1264,7 @@ class CartFlow
                 'customizations'        => $customizations,
                 'customizations_total'  => $customizationsTotal,
                 'quantity'              => $quantity,
-                'observation'           => null,
+                'observation'           => $observation,
                 'extra_product_id'      => $extraProductId,
                 'extra_product_name'    => $extraProductName,
             ];

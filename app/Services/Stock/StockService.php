@@ -5,7 +5,9 @@ namespace App\Services\Stock;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductVariation;
+use App\Models\Store;
 use App\Services\ImageUploadService;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -17,7 +19,22 @@ class StockService
 {
     public function __construct(
         private readonly ImageUploadService $imageUploader,
+        private readonly TenantContext $tenant,
     ) {}
+
+    /**
+     * Folder used to organize category images: {store_id}/produtos/categorias.
+     * Categories belong to the company (not a single store), so we use the
+     * tenant's first store as the "loja" bucket folder.
+     */
+    private function categoryImageFolder(): string
+    {
+        $store = $this->tenant->hasCompany()
+            ? Store::query()->where('company_id', $this->tenant->companyId())->orderBy('id')->first()
+            : null;
+
+        return ($store?->mediaFolderName() ?? 'sem-loja').'/produtos/categorias';
+    }
 
     /**
      * Paginated product list with search and category filter.
@@ -223,7 +240,7 @@ class StockService
             $payload = $this->normalizeCategoryPayload($data);
 
             if ($image !== null) {
-                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+                $payload['image_url'] = $this->imageUploader->upload($image, $this->categoryImageFolder());
             }
 
             $category = Category::query()->create($payload);
@@ -244,7 +261,7 @@ class StockService
 
             if ($image !== null) {
                 $this->deleteCategoryImageIfLocal($category->image_url);
-                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+                $payload['image_url'] = $this->imageUploader->upload($image, $this->categoryImageFolder());
             }
 
             $category->fill($payload)->save();
@@ -328,6 +345,9 @@ class StockService
                 'attributes',
                 'is_default',
                 'is_active',
+                'store_pizza_size_id',
+                'price_mode',
+                'override_price',
             ]);
 
             $payload['stock_quantity'] = (int) ($payload['stock_quantity'] ?? 0);

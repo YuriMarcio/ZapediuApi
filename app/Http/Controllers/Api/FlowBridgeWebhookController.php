@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Jobs\Whatsapp\ProcessZapiWebhookJob;
 use App\Models\Company;
+use App\Models\WhatsappSession;
 use App\Services\Whatsapp\FlowBridgeInboundPayloadMapper;
 use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\Request;
@@ -22,14 +23,15 @@ class FlowBridgeWebhookController extends Controller
     public function __invoke(Request $request, string $token, TenantContext $tenant)
     {
         $event = $request->all();
-        $company = $this->resolveCompany($event);
-        $expectedToken = $company?->flowbridge_webhook_secret ?: (string) config('services.flowbridge.webhook_secret');
+        $session = $this->resolveSession($event);
+        $company = $session?->operation?->companies()->where('is_active', true)->first() ?? $this->resolveCompany($event);
+        $expectedToken = $session?->getAttribute('webhook_secret') ?: $company?->flowbridge_webhook_secret ?: (string) config('services.flowbridge.webhook_secret');
 
         if ($expectedToken === '' || ! hash_equals($expectedToken, $token)) {
             return response()->json(['message' => 'Unauthorized webhook token.'], Response::HTTP_UNAUTHORIZED);
         }
 
-        Log::info('Recebido evento FlowBridge', ['event' => $event, 'company_id' => $company?->id]);
+        Log::info('Recebido evento FlowBridge', ['event' => $event, 'company_id' => $company?->id, 'operation_id' => $session?->operation_id]);
 
         if (($event['type'] ?? null) !== 'MessageReceived') {
             return response()->json(['message' => 'Event ignored.', 'type' => $event['type'] ?? null]);
@@ -62,5 +64,11 @@ class FlowBridgeWebhookController extends Controller
         }
 
         return Company::query()->where('flowbridge_instance_id', $instanceId)->first();
+    }
+
+    private function resolveSession(array $event): ?WhatsappSession
+    {
+        $instanceId = (string) ($event['instanceId'] ?? '');
+        return $instanceId === '' ? null : WhatsappSession::query()->with('operation.companies')->where('flowbridge_instance_id', $instanceId)->first();
     }
 }

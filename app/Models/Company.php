@@ -17,6 +17,8 @@ class Company extends Model
         'phone',
         'whatsapp',
         'seller_id',
+        'manager_id',
+        'operation_id',
         'plan_id',
         'slug',
         'segment',
@@ -31,6 +33,7 @@ class Company extends Model
         'business_hours',
         'settings',
         'is_active',
+        'is_open',
     ];
 
     protected $casts = [
@@ -38,6 +41,7 @@ class Company extends Model
         'business_hours' => 'array',
         'settings' => 'array',
         'is_active' => 'boolean',
+        'is_open' => 'boolean',
     ];
 
     public function users(): HasMany
@@ -69,4 +73,16 @@ class Company extends Model
     {
         return $this->belongsTo(Plan::class);
     }
+
+    public function seller(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'seller_id');
+    }
+
+    public function manager(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'manager_id');
+    }
+
+    public function operation(): BelongsTo { return $this->belongsTo(Operation::class); }
 }

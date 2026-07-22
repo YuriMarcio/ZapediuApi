@@ -37,6 +37,8 @@ class User extends Authenticatable implements JWTSubject
      */
     protected $fillable = [
         'company_id',
+        'manager_id',
+        'operation_id',
         'name',
         'email',
         'phone',
@@ -45,6 +47,9 @@ class User extends Authenticatable implements JWTSubject
         'is_admin',
         'role',
         'seller_code',
+        'commercial_zone',
+        'monthly_store_goal',
+        'is_active',
         'last_login_at',
         'last_login_ip',
     ];
@@ -70,6 +75,8 @@ class User extends Authenticatable implements JWTSubject
             'email_verified_at' => 'datetime',
             'password' => 'hashed',
             'is_admin' => 'boolean',
+            'is_active' => 'boolean',
+            'monthly_store_goal' => 'integer',
             'last_login_at' => 'datetime',
         ];
     }
@@ -77,6 +84,26 @@ class User extends Authenticatable implements JWTSubject
     public function company(): BelongsTo
     {
         return $this->belongsTo(Company::class);
+    }
+
+    public function manager(): BelongsTo
+    {
+        return $this->belongsTo(self::class, 'manager_id');
+    }
+
+    public function operation(): BelongsTo
+    {
+        return $this->belongsTo(Operation::class);
+    }
+
+    public function sellers(): HasMany
+    {
+        return $this->hasMany(self::class, 'manager_id');
+    }
+
+    public function soldCompanies(): HasMany
+    {
+        return $this->hasMany(Company::class, 'seller_id');
     }
 
     public function stores(): HasMany

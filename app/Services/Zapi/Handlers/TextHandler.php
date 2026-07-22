@@ -5,6 +5,7 @@ namespace App\Services\Zapi\Handlers;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Flows\GreetingFlow;
 use App\Services\Zapi\Flows\CheckoutFlow;
+use App\Services\Zapi\Flows\CartFlow;
 use App\Services\Zapi\Handlers\CategoriesHandle;
 use App\Services\Zapi\Handlers\StoreHandle;
 use App\Services\Whatsapp\WhatsAppClientInterface;
@@ -18,7 +19,8 @@ class TextHandler
         private StoreHandle $storeHandle,
         private WhatsAppClientInterface $zapiClient,
         private CheckoutFlow $checkoutFlow,
-        private CategoriesHandle $categoriesHandle
+        private CategoriesHandle $categoriesHandle,
+        private CartFlow $cartFlow
 
     ) {
     }
@@ -42,6 +44,13 @@ class TextHandler
             }
             // Retorna true indicando que o comando foi tratado
             return true;
+        }
+
+        // Loja pizzaria aguardando a observação do cliente pro item que acabou de ser
+        // montado (ver CartFlow::finishCustomizationAndCommit) — precisa vir antes do
+        // checkout_step pra não ser interpretado como dado de checkout.
+        if (!empty($state['pending_add']['awaiting_observation'])) {
+            return $this->cartFlow->handleObservationTextInput($phone, $messageText);
         }
 
         // Se o usuário está em um fluxo de checkout (ex: preenchendo dados)

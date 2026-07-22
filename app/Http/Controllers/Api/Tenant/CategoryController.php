@@ -81,6 +81,7 @@ class CategoryController extends Controller
             'image_url' => $category->image_url,
             'color' => $category->color,
             'sort_order' => (int) ($category->ordem_exibicao ?? 0),
+            'category_type' => $category->category_type ?? 'standard',
             'is_active' => (bool) $category->is_active,
             'products_count' => (int) ($category->products_count ?? 0),
             'created_at' => optional($category->created_at)?->toJSON(),

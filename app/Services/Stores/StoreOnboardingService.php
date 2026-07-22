@@ -16,9 +16,15 @@ class StoreOnboardingService
 
     public function listForUser(Request $request)
     {
+        $user = $request->user();
+
         return Store::query()
+            ->withoutGlobalScopes()
             ->with('owner:id,name,email')
-            ->where('user_id', $request->user()->id)
+            ->when($user->role === 'seller', fn ($query) => $query->whereHas('company', fn ($company) => $company->where('seller_id', $user->id)))
+            ->when($user->role === 'manager', fn ($query) => $query->whereHas('company', fn ($company) => $company->where('manager_id', $user->id)))
+            ->when($user->role === 'owner', fn ($query) => $query->where('company_id', $user->company_id))
+            ->when(! in_array($user->role, ['master', 'seller', 'manager', 'owner'], true), fn ($query) => $query->whereRaw('1 = 0'))
             ->orderBy('name')
             ->get();
     }
@@ -33,54 +39,46 @@ class StoreOnboardingService
         // essa exigência é liberada para não travar o ambiente de dev.
         $payload['is_active'] = ! app()->isProduction();
 
-        // Logo
-        $logo = $request->file('logo');
-        if ($logo !== null) {
-            $path = $this->imageUploader->upload($logo, 'logos', 600, 80);
-            $payload['logo_url'] = \Storage::disk('r2')->url($path);
-        }
-
-        // Banner/Cover
-        $cover = $request->file('cover');
-        if ($cover !== null) {
-            $path = $this->imageUploader->upload($cover, 'covers', 1200, 400);
-            $payload['cover_image_url'] = \Storage::disk('r2')->url($path);
-        }
-
+        // Cria a loja primeiro para ter o ID usado na organização das pastas de mídia.
         $store = Store::query()->create($payload);
 
+        $this->uploadIdentityImages($store, $request);
+        $store->save();
 
         return $store->refresh();
     }
 
     public function updateIdentity(Store $store, array $data, $request)
     {
-        // Upload do Logo para o R2
-        if ($request->hasFile('logo')) {
-            // Se já existir um antigo, deleta do R2 para não acumular lixo
-            if ($store->logo_url) {
-                // Não é possível deletar por URL, mas se quiser pode implementar lógica extra
-            }
+        $this->uploadIdentityImages($store, $request);
 
-            // Salva no R2 dentro da pasta 'logos'
-            $path = $request->file('logo')->store('logos', 'r2');
-            $store->logo_url = \Storage::disk('r2')->url($path);
-        }
-
-        // Upload da Capa para o R2
-        if ($request->hasFile('cover_image')) {
-            if ($store->cover_image_url) {
-                // Não é possível deletar por URL, mas se quiser pode implementar lógica extra
-            }
-
-            $path = $request->file('cover_image')->store('covers', 'r2');
-            $store->cover_image_url = \Storage::disk('r2')->url($path);
-        }
+        unset($data['logo'], $data['cover'], $data['menu_banner']);
 
         $store->fill($data);
         $store->save();
 
         return $store;
+    }
+
+    /**
+     * Uploads logo/capa/banner into {store_id}/perfil/... onto the in-memory
+     * model (caller is responsible for saving).
+     */
+    private function uploadIdentityImages(Store $store, $request): void
+    {
+        $folder = $store->mediaFolderName().'/perfil';
+
+        if ($request->hasFile('logo')) {
+            $store->logo_url = $this->imageUploader->upload($request->file('logo'), $folder.'/logo', 600, 80);
+        }
+
+        if ($request->hasFile('cover')) {
+            $store->cover_image_url = $this->imageUploader->upload($request->file('cover'), $folder.'/capa', 1200, 400);
+        }
+
+        if ($request->hasFile('menu_banner')) {
+            $store->menu_banner_url = $this->imageUploader->upload($request->file('menu_banner'), $folder.'/banner-cardapio', 1200, 400);
+        }
     }
 
     public function updateAddress(Store $store, array $data, Request $request): Store

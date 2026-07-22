@@ -25,6 +25,10 @@ class EnsureRole
             abort(Response::HTTP_FORBIDDEN, 'Permissao insuficiente para esta operacao.');
         }
 
+        if ((string) $user->role === 'seller' && ! $user->is_active) {
+            abort(Response::HTTP_FORBIDDEN, 'Vendedor temporariamente bloqueado.');
+        }
+
         return $next($request);
     }
 }

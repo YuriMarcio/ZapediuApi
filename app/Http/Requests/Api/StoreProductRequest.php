@@ -57,6 +57,9 @@ class StoreProductRequest extends FormRequest
             'variations.*.attributes'     => ['nullable', 'array'],
             'variations.*.is_default'     => ['nullable', 'boolean'],
             'variations.*.is_active'      => ['nullable', 'boolean'],
+            'variations.*.store_pizza_size_id' => ['nullable', 'integer', 'exists:store_pizza_sizes,id'],
+            'variations.*.price_mode'     => ['nullable', Rule::in(['inherit', 'override'])],
+            'variations.*.override_price' => ['nullable', 'numeric', 'min:0'],
         ];
     }
 }

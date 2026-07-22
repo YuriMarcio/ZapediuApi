@@ -42,12 +42,14 @@ class Store extends Model implements HasMedia
         'business_type',
         'max_flavors',
         'size_template',
+        'pizza_settings',
         'category_id',
         'whatsapp_phone',
         'phone',
         'cnpj',
         'logo_url',
         'cover_image_url',
+        'menu_banner_url',
         'description',
         'zip_code',
         'street',
@@ -69,7 +71,10 @@ class Store extends Model implements HasMedia
         'settings' => 'array',
         'business_hours' => 'array',
         'size_template' => 'array',
+        'pizza_settings' => 'array',
     ];
+
+    public const PIZZA_FLAVOR_PRICE_RULES = ['most_expensive', 'average'];
     public function owner(): BelongsTo
     {
         return $this->belongsTo(User::class, 'user_id');
@@ -102,6 +107,61 @@ class Store extends Model implements HasMedia
     public function sizeTemplate(): array
     {
         return $this->size_template ?? StoreSizeTemplateDefaults::for($this->business_type);
+    }
+
+    /**
+     * Lojas pizzaria ganham o motor avançado de configuração (tamanhos próprios,
+     * preço por categoria, bordas/ingredientes/molhos). Açaiteria e outros continuam
+     * no fluxo genérico de sabores (size_template + max_flavors), inalterado.
+     */
+    public function isPizzaAdvancedStore(): bool
+    {
+        return $this->business_type === 'pizzaria';
+    }
+
+    public function pizzaSizes(): HasMany
+    {
+        return $this->hasMany(StorePizzaSize::class)->orderBy('position');
+    }
+
+    /**
+     * Configurações do motor avançado de pizzaria (regra de combo + toggles de recursos),
+     * com defaults aplicados por cima do que estiver salvo — mesmo padrão de sizeTemplate().
+     *
+     * @return array{flavor_price_rule: string, features: array{bordas: bool, ingredientes: bool, molhos: bool, observacoes: bool}}
+     */
+    public function pizzaSettings(): array
+    {
+        return array_replace_recursive([
+            'flavor_price_rule' => 'most_expensive',
+            'features' => [
+                'bordas' => true,
+                'ingredientes' => true,
+                'molhos' => true,
+                'observacoes' => true,
+            ],
+        ], $this->pizza_settings ?? []);
+    }
+
+    public function pizzaFlavorPriceRule(): string
+    {
+        return $this->pizzaSettings()['flavor_price_rule'];
+    }
+
+    public function pizzaFeatureEnabled(string $feature): bool
+    {
+        return (bool) ($this->pizzaSettings()['features'][$feature] ?? false);
+    }
+
+    /**
+     * Nome de pasta usado para organizar os uploads dessa loja no bucket:
+     * "{nome-slugificado}-{id}", ex.: "pizzaria-do-joao-7".
+     */
+    public function mediaFolderName(): string
+    {
+        $slug = \Illuminate\Support\Str::slug($this->name) ?: 'loja';
+
+        return "{$slug}-{$this->id}";
     }
 
     public function categories(): HasMany

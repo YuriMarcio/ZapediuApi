@@ -25,6 +25,7 @@ class StoreIdentityRequest extends FormRequest
             'description' => ['nullable', 'string', 'max:500'],
             'logo' => ['nullable', 'image', 'max:20480'],
             'cover' => ['nullable', 'image', 'max:20480'],
+            'menu_banner' => ['nullable', 'image', 'max:20480'],
         ];
     }
 }

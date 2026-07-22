@@ -3,8 +3,10 @@
 namespace App\Services\Zapi\Handlers;
 
 use App\Models\Store;
+use App\Models\StorePizzaSize;
 use App\Models\Product;
 use App\Models\ProductVariation;
+use App\Services\Pizzaria\PizzaPricingResolver;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\StoreSearch;
 use App\Services\Whatsapp\WhatsAppClientInterface;
@@ -20,7 +22,8 @@ class ProductsHandler
         private FlowManager $flow,
         private StoreSearch $search,
         private WhatsAppClientInterface $zapiClient,
-        private ProductCarouselBuilder $carouselBuilder // Injeção do Builder
+        private ProductCarouselBuilder $carouselBuilder, // Injeção do Builder
+        private PizzaPricingResolver $pizzaPricing
     ) {
     }
 
@@ -139,6 +142,26 @@ class ProductsHandler
                 ->values();
 
             if ($variations->isNotEmpty()) {
+                // Lojas pizzaria (motor avançado): preço do botão segue a hierarquia
+                // categoria → exceção do sabor, não mais só additional_price da variação.
+                if ($store->isPizzaAdvancedStore()) {
+                    $sizesById = StorePizzaSize::query()
+                        ->whereIn('id', $variations->pluck('store_pizza_size_id')->filter())
+                        ->get()
+                        ->keyBy('id');
+
+                    return $variations->take(3)->map(function (ProductVariation $v) use ($product, $sizesById): array {
+                        $size = $v->store_pizza_size_id !== null ? $sizesById->get($v->store_pizza_size_id) : null;
+                        $price = $size !== null ? $this->pizzaPricing->resolveFlavorPrice($product, $size)['price'] : null;
+
+                        return [
+                            'id'    => 'flow_pizza_size_'.(int) $product->id.'_'.(int) $v->id,
+                            'label' => $v->name.($price !== null ? ' — R$ '.number_format($price, 2, ',', '.') : ''),
+                            'type'  => 'REPLY',
+                        ];
+                    })->values()->all();
+                }
+
                 return $variations->take(3)->map(fn (ProductVariation $v): array => [
                     'id'    => 'flow_pizza_size_'.(int) $product->id.'_'.(int) $v->id,
                     'label' => $v->name.(

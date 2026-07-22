@@ -12,9 +12,13 @@ class OptionalFlow extends Model
 {
     use BelongsToCompany;
 
+    /** Tipos dos 3 fluxos auto-provisionados por loja pizzaria (App\Services\Pizzaria\PizzaOptionalFlowProvisioner). */
+    public const PIZZA_FEATURE_TYPES = ['borda', 'ingrediente', 'molho'];
+
     protected $fillable = [
         'company_id',
         'store_id',
+        'feature_type',
         'name',
         'description',
         'is_active',
@@ -27,6 +31,11 @@ class OptionalFlow extends Model
     public function store(): BelongsTo
     {
         return $this->belongsTo(Store::class);
+    }
+
+    public function scopeForFeature($query, string $featureType)
+    {
+        return $query->where('feature_type', $featureType);
     }
 
     public function steps(): HasMany

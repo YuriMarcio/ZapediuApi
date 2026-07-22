@@ -7,9 +7,18 @@ use Spatie\MediaLibrary\MediaCollections\Models\Media;
 
 class ProductPathGenerator implements PathGenerator
 {
+    /**
+     * Organizes uploads as: {prefix}/{nome-da-loja}-{store_id}/produtos/{product_id}/
+     */
     public function getPath(Media $media): string
     {
-        return 'products/' . $media->model->id . '/';
+        $prefix = trim((string) config('media-library.prefix', ''), '/');
+        $model = $media->model;
+        $storeFolder = $model->store?->mediaFolderName() ?? 'sem-loja';
+
+        $path = $storeFolder . '/produtos/' . $model->id . '/';
+
+        return $prefix !== '' ? $prefix . '/' . $path : $path;
     }
 
     public function getPathForConversions(Media $media): string

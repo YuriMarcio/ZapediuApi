@@ -6,6 +6,7 @@ use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\MorphToMany;
 use Spatie\MediaLibrary\HasMedia;
@@ -88,6 +89,19 @@ class Product extends Model implements HasMedia
     public function optionalFlows(): MorphToMany
     {
         return $this->morphToMany(OptionalFlow::class, 'assignable', 'optional_flow_assignments');
+    }
+
+    /**
+     * Vínculo item-a-item de opcionais (bordas/ingredientes/molhos) para lojas pizzaria —
+     * distinto de optionalFlows(), que vincula o fluxo inteiro. Ex.: uma pizza de chocolate
+     * pode só permitir bordas doces, mesmo que a loja tenha outras bordas cadastradas.
+     */
+    public function optionalFlowStepOptions(): BelongsToMany
+    {
+        return $this->belongsToMany(
+            OptionalFlowStepOption::class,
+            'product_optional_flow_step_options',
+        );
     }
 
     protected function imageUrl(): Attribute
