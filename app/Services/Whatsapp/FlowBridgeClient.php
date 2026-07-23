@@ -2,6 +2,8 @@
 
 namespace App\Services\Whatsapp;
 
+use App\Models\Company;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Http\Client\PendingRequest;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Http;
@@ -14,6 +16,10 @@ use Illuminate\Support\Facades\Http;
  */
 class FlowBridgeClient implements WhatsAppClientInterface
 {
+    public function __construct(private readonly TenantContext $tenant)
+    {
+    }
+
     public function sendText(string $phone, string $message): array
     {
         return $this->sendMessage('text', $phone, ['text' => $message]);
@@ -60,13 +66,15 @@ class FlowBridgeClient implements WhatsAppClientInterface
         $cards = array_values(array_map(
             fn (array $card): array => array_filter([
                 'title' => $card['title'] ?? null,
-                'body' => (string) ($card['body'] ?? $message),
+                'body' => (string) ($card['body'] ?? $card['text'] ?? $message),
                 'footer' => $card['footer'] ?? null,
-                'imageUrl' => $card['imageUrl'] ?? null,
+                'imageUrl' => $card['imageUrl'] ?? $card['image'] ?? null,
                 'buttons' => $this->mapButtons($card['buttons'] ?? []),
             ], fn (mixed $value): bool => $value !== null && $value !== []),
             $carousel
         ));
+
+        \Illuminate\Support\Facades\Log::info('sendCarousel payload de saída', ['cards_count' => count($cards), 'cards' => $cards]);
 
         return $this->sendMessage('carousel', $phone, [
             'content' => [
@@ -77,17 +85,45 @@ class FlowBridgeClient implements WhatsAppClientInterface
     }
 
     /**
-     * @return array<int, array{id: string, displayText: string}>
+     * @return array<int, array<string, string>>
      */
     private function mapButtons(array $buttons): array
     {
-        return array_values(array_map(
-            fn (array $button): array => [
-                'id' => (string) ($button['id'] ?? ''),
-                'displayText' => (string) ($button['displayText'] ?? $button['label'] ?? ''),
+        return array_values(array_map($this->mapButton(...), $buttons));
+    }
+
+    /**
+     * Cada tipo de botão da Evolution API exige um campo próprio além de type/displayText:
+     * id (reply), url (url), phoneNumber (call) ou copyCode (copy). Mandar todos como "reply"
+     * é o que fazia o carrossel ser rejeitado com 400 e cair no fallback de lista simples.
+     */
+    private function mapButton(array $button): array
+    {
+        $type = strtolower((string) ($button['type'] ?? 'reply'));
+        $displayText = (string) ($button['displayText'] ?? $button['label'] ?? '');
+
+        return match ($type) {
+            'url' => [
+                'type' => 'url',
+                'displayText' => $displayText,
+                'url' => (string) ($button['url'] ?? ''),
             ],
-            $buttons
-        ));
+            'call' => [
+                'type' => 'call',
+                'displayText' => $displayText,
+                'phoneNumber' => (string) ($button['phoneNumber'] ?? $button['phone'] ?? ''),
+            ],
+            'copy' => [
+                'type' => 'copy',
+                'displayText' => $displayText,
+                'copyCode' => (string) ($button['copyCode'] ?? $button['code'] ?? ''),
+            ],
+            default => [
+                'type' => 'reply',
+                'id' => (string) ($button['id'] ?? ''),
+                'displayText' => $displayText,
+            ],
+        };
     }
 
     private function sendMessage(string $type, string $phone, array $payload): array
@@ -118,8 +154,34 @@ class FlowBridgeClient implements WhatsAppClientInterface
             ]);
     }
 
+    /**
+     * Resolve a instância a responder por: (1) a instância que recebeu a mensagem atual, setada
+     * direto no TenantContext pelo webhook — funciona mesmo sem nenhuma loja vinculada à
+     * operação, já que uma resposta só precisa sair pelo mesmo número que recebeu; (2) se não
+     * houver isso (ex.: fluxo de confirmação de entregador, que não passa pelo webhook),
+     * company -> operation -> whatsapp_session; (3) o ID fixo do config como último fallback.
+     * Usar um valor fixo sozinho fazia toda resposta sair pela mesma instância (frequentemente
+     * errada/morta), não importa qual operação de fato recebeu a mensagem.
+     */
     private function instanceId(): string
     {
+        if ($this->tenant->whatsappInstanceId()) {
+            return $this->tenant->whatsappInstanceId();
+        }
+
+        if ($this->tenant->hasCompany()) {
+            $instanceId = Company::query()
+                ->with('operation.whatsappSession')
+                ->find($this->tenant->companyId())
+                ?->operation
+                ?->whatsappSession
+                ?->flowbridge_instance_id;
+
+            if ($instanceId) {
+                return $instanceId;
+            }
+        }
+
         return (string) config('services.flowbridge.instance_id');
     }
 }

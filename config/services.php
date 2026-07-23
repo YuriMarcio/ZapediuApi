@@ -43,6 +43,10 @@ return [
         // Token no path de /api/webhooks/flowbridge/{token} — o FlowBridge não assina o POST
         // que manda pro callbackUrl, então esse token é a única barreira contra spoofing.
         'webhook_secret' => env('FLOWBRIDGE_WEBHOOK_SECRET'),
+        // URL usada pra montar o callbackUrl que o FlowBridge chama de volta. Precisa ser
+        // alcançável a partir de ONDE O FLOWBRIDGE RODA — em dev local o FlowBridge é remoto,
+        // então APP_URL (localhost:8080) não serve; usar a URL pública do túnel (ngrok etc.).
+        'callback_base_url' => env('FLOWBRIDGE_CALLBACK_BASE_URL', env('APP_URL')),
     ],
 
     'mercadopago' => [

@@ -4,6 +4,7 @@ namespace App\Jobs;
 
 use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Models\Order;
+use App\Models\DeliveryGroup;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -28,7 +29,23 @@ class BroadcastOrderToDriversJob implements ShouldQueue
 
     public function handle(WhatsAppClientInterface $zapi): void
     {
-        $groupJid = config('services.zapi.drivers_group_jid');
+        $deliveryGroup = $this->order->deliveryGroup
+            ?? DeliveryGroup::query()
+                ->where('operation_id', $this->order->operation_id)
+                ->where('is_active', true)
+                ->orderBy('id')
+                ->first();
+
+        if ($deliveryGroup === null) {
+            Log::warning('Pedido pronto sem grupo de entregas configurado.', ['order_id' => $this->order->id]);
+            return;
+        }
+
+        if ($this->order->delivery_group_id !== $deliveryGroup->id) {
+            $this->order->updateQuietly(['delivery_group_id' => $deliveryGroup->id]);
+        }
+
+        $groupJid = $deliveryGroup->whatsapp_group_jid;
 
         $payload = is_string($this->order->raw_payload)
             ? json_decode($this->order->raw_payload, true)
@@ -108,7 +125,7 @@ class BroadcastOrderToDriversJob implements ShouldQueue
             $lines[] = "⏱️ {$tempoEntrega}";
         }
         // $this->CheckoutFlow não existe, usar a variável local $checkoutFlow
-        $lines[] = "💰 *Taxa:* *R$ " . number_format((float)($deliveryFee ?? 0), 2, ',', '.') . '*';
+        $lines[] = "💰 *Taxa:* *R$ " . number_format((float) $this->order->delivery_fee, 2, ',', '.') . '*';
         $lines[] = '';
         $lines[] = "💳 *Pagamento:*({$status})";
         $lines[] = "📦 *Volume:* {$itemsCount} itens";

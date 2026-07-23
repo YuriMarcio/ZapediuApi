@@ -3,6 +3,7 @@
 use App\Http\Controllers\Admin\CourierController;
 use App\Http\Controllers\Api\AdminEndpointsController;
 use App\Http\Controllers\Api\CommercialDashboardController;
+use App\Http\Controllers\Api\DeliveryManagementController;
 use App\Http\Controllers\Api\MasterOperationController;
 use App\Http\Controllers\Api\MercadoPagoController;
 use App\Http\Controllers\Api\OnboardingController;
@@ -87,6 +88,15 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
     Route::post('/sellers', [SellerController::class, 'store'])->middleware('role:manager')->name('sellers.store');
     Route::patch('/sellers/{seller}/status', [SellerController::class, 'updateStatus'])->middleware('role:manager')->name('sellers.status');
     Route::get('/commercial/dashboard', [CommercialDashboardController::class, 'show'])->middleware('role:manager,master')->name('commercial.dashboard');
+    Route::prefix('delivery')->middleware('role:operator,master')->group(function (): void {
+        Route::get('/dashboard', [DeliveryManagementController::class, 'dashboard']);
+        Route::get('/couriers', [DeliveryManagementController::class, 'couriers']);
+        Route::post('/couriers', [DeliveryManagementController::class, 'storeCourier']);
+        Route::patch('/couriers/{courier}', [DeliveryManagementController::class, 'updateCourier']);
+        Route::post('/couriers/{courier}/resend-confirmation', [DeliveryManagementController::class, 'resendConfirmation']);
+        Route::get('/groups', [DeliveryManagementController::class, 'groups']);
+        Route::post('/groups', [DeliveryManagementController::class, 'storeGroup']);
+    });
     Route::get('/leads', [LeadController::class, 'index'])->middleware('role:manager,seller')->name('leads.index');
     Route::post('/leads', [LeadController::class, 'store'])->middleware('role:manager,seller')->name('leads.store');
     Route::patch('/leads/{lead}', [LeadController::class, 'update'])->middleware('role:manager,seller')->name('leads.update');

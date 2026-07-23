@@ -8,6 +8,8 @@ use Illuminate\Foundation\Queue\Queueable;
 use App\Services\Whatsapp\AcceptDeliveryHandler;
 use App\Services\Whatsapp\FinishDeliveryHandler;
 use App\Services\Whatsapp\WhatsAppClientInterface;
+use App\Services\Whatsapp\CourierConfirmationService;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Redis;
 
@@ -21,11 +23,15 @@ class ProcessZapiWebhookJob implements ShouldQueue
     public function __construct(
         private readonly ?int $companyId,
         private readonly array $payload,
+        private readonly ?string $whatsappInstanceId = null,
     ) {
     }
 
-    public function handle(ProcessIncomingWebhookAction $action, WhatsAppClientInterface $zapi): void
+    public function handle(ProcessIncomingWebhookAction $action, WhatsAppClientInterface $zapi, CourierConfirmationService $confirmation, TenantContext $tenant): void
     {
+        // Seta a instância ANTES de qualquer resolução de company — uma resposta (ex.: saudação
+        // inicial) precisa sair pelo mesmo número que recebeu a mensagem, mesmo sem loja vinculada.
+        $tenant->setWhatsappInstanceId($this->whatsappInstanceId);
         // Telefone de quem enviou (FlowBridge normaliza pra "phone"; os demais campos
         // ficam como fallback defensivo caso um payload não-normalizado chegue aqui).
         $driverPhone = $this->payload['phone']
@@ -50,6 +56,16 @@ class ProcessZapiWebhookJob implements ShouldQueue
 
         if (!$buttonId && isset($this->payload['text']['text']) && str_starts_with($this->payload['text']['text'], 'accept_order|')) {
             $buttonId = $this->payload['text']['text'];
+        }
+
+        if ($driverPhone && $buttonId && str_starts_with($buttonId, 'courier_confirm|')) {
+            $confirmation->confirm($driverPhone, (int) explode('|', $buttonId)[1], $zapi);
+            return;
+        }
+
+        if ($driverPhone && $buttonId && str_starts_with($buttonId, 'courier_group|')) {
+            $confirmation->sendGroupLink($driverPhone, (int) explode('|', $buttonId)[1], $zapi);
+            return;
         }
 
         // A. Clicou em "ACEITAR ENTREGA" lá no grupo

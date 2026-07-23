@@ -144,7 +144,7 @@ class StoreHandle
 
             $cards[] = [
                 'text' => $this->formatStoreCardText($store),
-                'image' => $store->cover_image_url ?? $store->logo_url ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
+                'image' => $store->logo_url ?? $store->cover_image_url ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
                 'buttons' => [
                     [
                         'id' => 'view_menu_'.$store->slug,

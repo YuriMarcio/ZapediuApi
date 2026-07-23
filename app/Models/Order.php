@@ -21,6 +21,7 @@ class Order extends Model
         'store_id',
         'product_ids',
         'courier_id',
+        'delivery_group_id',
         'code',
         'code_confirm',
         'status',
@@ -97,6 +98,11 @@ class Order extends Model
     public function courier(): BelongsTo
     {
         return $this->belongsTo(Courier::class);
+    }
+
+    public function deliveryGroup(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryGroup::class);
     }
     // ── Accessors ────────────────────────────────────────────────────────────
 

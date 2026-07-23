@@ -170,8 +170,8 @@ class CategoriesHandle
         foreach ($stores as $store) {
             $cards[] = [
                 'text' => $this->formatStoreCardText($store),
-                'image' => $store->cover_image_url
-                    ?? $store->logo_url
+                'image' => $store->logo_url
+                    ?? $store->cover_image_url
                     ?? 'https://picsum.photos/seed/loja-'.$store->id.'/600/600',
                 'buttons' => [
                     [

@@ -68,7 +68,7 @@ class MasterOperationController extends Controller
         abort_if($operation->whatsappSession()->exists(), 422, 'A operação já possui uma sessão WhatsApp.');
         $instanceId = $data['instance_id'] ?: 'operation-'.$operation->id.'-'.Str::lower(Str::random(8));
         $secret = Str::random(48);
-        $callbackUrl = rtrim((string) config('app.url'), '/').'/api/webhooks/flowbridge/'.$secret;
+        $callbackUrl = rtrim((string) config('services.flowbridge.callback_base_url'), '/').'/api/webhooks/flowbridge/'.$secret;
         $body = ['provider' => $data['provider'], 'instanceId' => $instanceId, 'credentials' => $data['credentials'] ?? [], 'callbackUrl' => $callbackUrl];
         if ($data['provider'] === 'evolution' && ($data['instance_mode'] ?? 'new') === 'existing') $body['existing'] = true;
         $response = Http::baseUrl(rtrim((string) config('services.flowbridge.base_url'), '/'))->withHeaders(['x-api-key' => config('services.flowbridge.api_key')])->post('/v1/instances', $body)->throw()->json();

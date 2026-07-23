@@ -31,11 +31,28 @@ class AcceptDeliveryHandler
             return;
         }
 
-        $driver = \App\Models\Courier::where('phone', $driverPhone)->first();
+        $driver = \App\Models\Courier::query()
+            ->whereRaw("REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '-', ''), '(', ''), ')', '') = ?", [preg_replace('/\D+/', '', $driverPhone)])
+            ->first();
 
         Log::info("Driver lookup for phone {$driverPhone}: " . ($driver ? "Found ID {$driver->id}" : "Not found"));
 
-        $driverId = $driver && $driver->is_active ? $driver->id : null;
+        $driverId = $driver && $driver->registration_status === 'confirmed' && $driver->status !== 'inativo' ? $driver->id : null;
+
+        if ($driverId === null) {
+            $zapi->sendText($driverPhone, '❌ Confirme seu cadastro no WhatsApp antes de aceitar corridas.');
+            return;
+        }
+
+        $order = Order::query()->with('deliveryGroup')->find($orderId);
+        if ($order === null) {
+            $zapi->sendText($driverPhone, '❌ Esta corrida não foi encontrada.');
+            return;
+        }
+        if ($order->delivery_group_id !== null && $order->delivery_group_id !== $driver->delivery_group_id) {
+            $zapi->sendText($driverPhone, '❌ Esta corrida pertence a outro grupo de entregas.');
+            return;
+        }
 
         try {
             // 2. A MÁGICA DA CONCORRÊNCIA (A corrida maluca)
@@ -70,8 +87,8 @@ class AcceptDeliveryHandler
             throw $e;
         }
 
-        $order = Order::find($orderId);
-        $groupJid = config('services.zapi.drivers_group_jid');
+        $order->refresh()->load('deliveryGroup');
+        $groupJid = $order->deliveryGroup?->whatsapp_group_jid;
 
         $payload = is_string($order->raw_payload)
             ? json_decode($order->raw_payload, true)
@@ -153,7 +170,6 @@ class AcceptDeliveryHandler
 
         $zapi->sendButtonActions($driverPhone, $privateMsg, $buttons);
 
-        $groupJid = config('services.zapi.drivers_group_jid');
         if ($groupJid) {
             $editMsg = "✅ O pedido *#{$order->code}* foi assumido por *{$driverName}*!";
             try {
