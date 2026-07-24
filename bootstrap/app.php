@@ -35,5 +35,8 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withSchedule(function (Schedule $schedule): void {
         // Clean up pending orders every 15 minutes
         $schedule->command('orders:cleanup-pending')->everyFifteenMinutes();
+
+        // Lembrete único de pagamento pendente aos 20min (§13.2)
+        $schedule->command('orders:send-pending-payment-reminders')->everyFiveMinutes();
     })
     ->create();

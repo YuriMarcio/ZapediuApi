@@ -135,20 +135,99 @@ class ButtonHandler
             case 'checkout_confirm_address':
                 return $this->checkoutFlow->sendOrderSummary($phone);
 
+            case 'checkout_change_address':
+                return $this->checkoutFlow->promptChangeAddress($phone);
+
+            // §12.2 — "📋 Ver Endereços" / "✏️ Mudar Nome"
+            case 'checkout_list_addresses':
+                return $this->checkoutFlow->sendAddressList($phone);
+
+            case 'checkout_change_name':
+                return $this->checkoutFlow->promptChangeName($phone);
+
             case 'checkout_pay_now':
                 return $this->checkoutFlow->processPayment($phone);
-
-            case 'checkout_skip_email':
-                return $this->checkoutFlow->skipEmailAndConfirm($phone);
 
             case 'flow_edit_cart':
                 return $this->cartFlow->sendEditCartCarousel($phone);
 
+            // §11.1 carrinho vazio "🍔 Ver Cardápio" — volta pro cardápio da mesma loja
             case 'cart_add_more':
+            case 'cart_view_menu':
                 return $this->cartFlow->handleAddMoreItems($phone);
+
+            // §11.2 caminho B — "📝 Adicionar observação" da confirmação pós-adição
+            case 'obs_pick':
+                return $this->cartFlow->startObservationPicker($phone);
         }
 
         // 2. IDs DINÂMICOS (Prefixos e Regex)
+
+        // §11.2 caminho A — observação de um item específico (card do Editar Carrinho ou lista)
+        if (preg_match('/^obs_item_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->promptObservationForItem($phone, (int) $matches[1]);
+        }
+
+        // §5.2 — "🔢 Quero mais de um": abre o seletor de quantidade
+        if (preg_match('/^flow_qty_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->productsHandler->sendQuantityPicker($phone, $matches[1], (int) $matches[2]);
+        }
+
+        // §5.2 — quantidade 2-9 escolhida na lista
+        if (preg_match('/^flow_qtypick_([a-z0-9_\-]+)_(\d+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->cartFlow->startAddProductFlow($phone, $matches[1], $matches[2], max(2, min(9, (int) $matches[3])));
+        }
+
+        // §5.2 — "10+": única exceção que pede texto livre
+        if (preg_match('/^flow_qty10_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
+            $state = $this->flow->getState($phone);
+            $state['awaiting_qty'] = ['store_id' => $matches[1], 'product_id' => (int) $matches[2]];
+            $this->flow->saveState($phone, $state);
+
+            $this->zapiClient->sendText($phone, 'Digite a quantidade desejada (número):');
+
+            return true;
+        }
+
+        // §4 — paginação do carrossel de produtos (geral e por categoria da loja)
+        if (preg_match('/^flow_product_more_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->productsHandler->sendProductsCarousel($phone, $matches[1], (int) $matches[2]);
+        }
+
+        if (preg_match('/^flow_catprod_more_([a-z0-9_\-]+)_([a-z0-9_\-]+)_(\d+)$/', $buttonId, $matches)) {
+            return $this->productsHandler->sendProductsCarousel($phone, $matches[1], (int) $matches[3], $matches[2]);
+        }
+
+        // §1.1.b/§4 — paginação do carrossel de busca de produto por IA (cruza várias lojas,
+        // termo salvo no state porque não cabe de forma segura num id de botão)
+        if (preg_match('/^flow_prodsearch_more_(\d+)$/', $buttonId, $matches)) {
+            $term = (string) ($this->flow->getState($phone)['product_search_term'] ?? '');
+
+            return $term !== '' && $this->productsHandler->sendProductSearchCarousel($phone, $term, (int) $matches[1]);
+        }
+
+        // §1.1.b nível 2 — paginação da busca por categoria geral (fallback quando o título não
+        // achou nada), mesma ideia do flow_prodsearch_more_ acima.
+        if (preg_match('/^flow_prodsearch_cat_more_(\d+)$/', $buttonId, $matches)) {
+            $state = $this->flow->getState($phone);
+            $generalCategory = (string) ($state['category_search_general'] ?? '');
+            $item = (string) ($state['category_search_item'] ?? '');
+
+            return $generalCategory !== ''
+                && $this->productsHandler->sendProductSearchByCategoryCarousel($phone, $generalCategory, $item, (int) $matches[1]);
+        }
+
+        // §12.2 — endereço escolhido na lista "Ver Endereços"
+        if (preg_match('/^checkout_addr_(\d+)$/', $buttonId, $matches)) {
+            return $this->checkoutFlow->handleAddressSelected($phone, (int) $matches[1]);
+        }
+
+        // §14.4 — "⭐ Avaliar Pedido" (captura simples de nota 1-5 por texto fica pra depois)
+        if (str_starts_with($buttonId, 'rate_order_')) {
+            $this->zapiClient->sendText($phone, '⭐ Obrigado! Sua avaliação ajuda demais a loja. Pode responder com uma nota de 1 a 5 e um comentário, se quiser. 💚');
+
+            return true;
+        }
 
         // NOVO PEDIDO: order_new_{id} - Fazer novo pedido (limpa sessão atual)
         if (str_starts_with($buttonId, 'order_new_')) {
@@ -198,13 +277,37 @@ class ButtonHandler
             $message .= '💰 Valor: R$ '.number_format($order->total, 2, ',', '.')."\n\n";
             $message .= 'Clique no botão abaixo para pagar:';
 
+            $storeName = trim((string) ($order->store->name ?? ''));
             $this->zapiClient->sendButtonActions(
                 $phone,
                 $message,
-                [['type' => 'URL', 'url' => $paymentLink, 'label' => '🔗 Abrir link de pagamento']]
+                [['type' => 'URL', 'url' => $paymentLink, 'label' => '🔗 Abrir link de pagamento']],
+                $storeName !== '' ? 'Zapediu & '.$storeName : 'Zapediu'
             );
 
             return true;
+        }
+
+        // VER CARRINHO DO PEDIDO PENDENTE: order_view_{id} (botão do lembrete de pagamento)
+        if (str_starts_with($buttonId, 'order_view_')) {
+            $orderId = (int) str_replace('order_view_', '', $buttonId);
+            $order = Order::find($orderId);
+
+            if (! $order) {
+                $this->zapiClient->sendText($phone, '❌ Pedido não encontrado.');
+
+                return true;
+            }
+
+            $paymentLink = $this->checkoutFlow->buildPaymentLink(
+                $phone,
+                $order->store->slug ?? '',
+                [],
+                (float) $order->total,
+                $order->code
+            );
+
+            return $this->checkoutFlow->sendPendingOrderMessage($phone, $order, $paymentLink);
         }
 
         // CANCELAR PEDIDO: order_cancel_{id} - Cancelar pedido pendente

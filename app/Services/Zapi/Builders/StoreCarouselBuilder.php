@@ -17,7 +17,10 @@ class StoreCarouselBuilder
         return $stores->map(function (Store $store) {
             return [
                 'text' => $this->formatStoreCardText($store),
-                'image' => $store->cover_image_path ?? $store->logo_path ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
+                // carousel_banner_url = logo composto num banner 1200x530 opaco (gerado por
+                // `stores:generate-carousel-banners`) — evita o crop de object-fit: cover que
+                // o client faz em cima do logo transparente cru.
+                'image' => $store->carousel_banner_url ?? $store->logo_url ?? $store->cover_image_url ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
                 'buttons' => [
                     [
                         'id' => 'view_menu_' . $store->slug,
@@ -27,71 +30,6 @@ class StoreCarouselBuilder
                 ],
             ];
         })->toArray();
-    }
-
-    /**
-     * 2. Consolidação: Unificando buildStoreRating e calculateFakeRating
-     */
-    public function calculateRating(Store $store): string
-    {
-        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
-        return number_format(4.2 + (($seed % 8) / 10), 1, '.', '');
-    }
-
-    /**
-     * 2. Consolidação: Unificando buildStoreEta e estimateEta
-     */
-    public function estimateEta(Store $store): string
-    {
-        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
-        $etas = ['15-25 min', '20-30 min', '25-35 min', '30-40 min'];
-
-        return $etas[$seed % count($etas)];
-    }
-
-
-    public function buildStoreRating(Store $store): string
-    {
-        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
-
-        return number_format(4.2 + (($seed % 8) / 10), 1, '.', '');
-    }
-
-    public function buildStoreEta(Store $store): string
-    {
-        $seed = abs(crc32((string) ($store->slug ?: $store->id)));
-        $etas = ['15-25 min', '20-30 min', '25-35 min', '30-40 min'];
-
-        return $etas[$seed % count($etas)];
-    }
-    public function buildStoreLogisticsLine(mixed $store): string
-    {
-        if (is_array($store)) {
-            $distance = (string) ($store['distance'] ?? '2,1 km');
-            $shipping = (string) ($store['shipping'] ?? 'Frete Gratis');
-            $eta = (string) ($store['eta'] ?? '30-40 min');
-
-            return $distance.' • '.$shipping.' • '.$eta;
-        }
-
-        if ($store instanceof Store) {
-            $seed = abs(crc32((string) ($store->slug ?: $store->id)));
-            $distances = ['0,9 km', '1,4 km', '2,1 km', '2,8 km', '3,6 km'];
-            $shippings = ['Frete Gratis', 'Frete R$ 3,99', 'Frete R$ 4,99', 'Frete R$ 6,49'];
-            $etas = ['15-25 min', '20-30 min', '25-35 min', '30-40 min'];
-
-            $distance = $distances[$seed % count($distances)];
-            $shipping = $shippings[$seed % count($shippings)];
-            $eta = $etas[$seed % count($etas)];
-
-            return $distance.' • '.$shipping.' • '.$eta;
-        }
-
-        $distance = '2,1 km';
-        $shipping = 'Frete Gratis';
-        $eta = '30-40 min';
-
-        return $distance.' • '.$shipping.' • '.$eta;
     }
 
     public function buildCategoryHeader(Category $category): string
@@ -122,37 +60,21 @@ class StoreCarouselBuilder
         return $slug;
     }
 
-    public function storeCategoryEmoji(Store $store): string
-    {
-        return match ((string) ($store->category?->slug ?? '')) {
-            'cat_lanches' => '🍔',
-            'cat_pastel' => '🥟',
-            'cat_pizza' => '🍕',
-            'cat_acai' => '🍇',
-            'cat_refeicao' => '🍽️',
-            'cat_farmacia' => '💊',
-            'cat_padaria' => '🥖',
-            'cat_mercadinho' => '🛒',
-            default => '🏬',
-        };
-    }
-
     /**
-     * Formata o texto descritivo que aparece no card da loja
+     * Formata o texto descritivo que aparece no card da loja. Sem nota/ETA — não existe
+     * fonte de dado real pra isso hoje (nenhuma tabela de avaliação no banco), então não
+     * fabricamos número. `has_active_promotion` vem de `Store::scopeWithPromotionFlag()`.
      */
     public function formatStoreCardText(Store $store): string
     {
-        $emoji = $this->getCategoryEmoji($store->category?->slug);
-        $rating = $this->calculateRating($store);
-        $eta = $this->estimateEta($store);
-
         $description = trim((string) ($store->description ?? 'O melhor da categoria no Zapediu.'));
         if (mb_strlen($description) > 70) {
             $description = rtrim(mb_substr($description, 0, 67)) . '...';
         }
 
-        return "{$store->name} {$emoji}\n" .
-               "⭐ {$rating} | 🛵 {$eta}\n\n" .
+        $badge = ((bool) ($store->getAttribute('has_active_promotion') ?? false)) ? "🔥 Ofertas hoje\n" : '';
+
+        return $badge."{$store->name}\n\n" .
                "💬 \"{$description}\"";
     }
 
@@ -165,16 +87,17 @@ class StoreCarouselBuilder
             'cat_acai'    => '🍇',
             'cat_refeicao' => '🍽️',
             'cat_farmacia' => '💊',
+            'cat_padaria' => '🥖',
+            'cat_mercadinho' => '🛒',
+            'cat_japonesa' => '🍣',
+            'cat_cafeteria' => '☕',
+            'cat_gelateria' => '🍨',
+            'cat_saudavel' => '🥗',
+            'cat_mexicana' => '🌮',
             default       => '🏬',
         };
     }
 
-    public function calculateFakeRating(Store $store): string
-    {
-        $seed = abs(crc32((string) $store->slug));
-        return number_format(4.2 + (($seed % 8) / 10), 1, '.', '');
-    }
-    
     public function buildMoreStoresCard(int $nextOffset): array
     {
         return [

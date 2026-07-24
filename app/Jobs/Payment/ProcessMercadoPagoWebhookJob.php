@@ -280,41 +280,14 @@ class ProcessMercadoPagoWebhookJob implements ShouldQueue
             return;
         }
 
-        // Formatar dados para a mensagem
+        // §14.1 do documento — pagamento confirmado, com o código de retirada (o entregador
+        // valida os últimos 4 caracteres de order->code na entrega, ver FinishDeliveryHandler).
         $storeName = $order->store?->name ?? 'a loja';
-        $paymentMethod = $paymentService->formatPaymentMethod($payment);
-        $amount = $paymentService->formatAmount($payment['transaction_amount'], $payment['currency_id'] ?? 'BRL');
 
-        // Formatar data de aprovação
-        $approvedAt = !empty($payment['date_approved'])
-            ? date('d/m/Y H:i', strtotime($payment['date_approved']))
-            : date('d/m/Y H:i');
-
-        // Template da mensagem
-        $message = "✅ *Pagamento Confirmado!*\n\n"
-            . "Oba! Seu pagamento foi aprovado com sucesso! 🎉\n\n"
-            . "📋 *Pedido:* #{$order->code}\n"
-            . "🔐 *Código de confirmação:* {$order->code_confirm}\n"
-            . "💰 *Valor:* {$amount}\n"
-            . "💳 *Forma:* {$paymentMethod}\n"
-            . "📅 *Data:* {$approvedAt}\n\n"
-            . "🍔 Seu pedido já está sendo preparado com muito carinho!\n"
-            . "🛵 Em breve estará a caminho da sua casa!\n\n"
-            . "📝 *Importante:* Apresente o código *{$order->code_confirm}* ao entregador para confirmar a entrega.\n\n";
-
-        // Adicionar endereço se disponível
-        if ($order->customer_address) {
-            $message .= "📍 *Endereço de entrega:*\n"
-                . "{$order->customer_address}\n\n";
-        }
-
-        // Adicionar previsão se disponível
-        if ($order->estimated_ready_at) {
-            $estimatedTime = $order->estimated_ready_at->format('H:i');
-            $message .= "⏰ *Previsão:* {$estimatedTime}\n\n";
-        }
-
-        $message .= "Obrigado por escolher a *{$storeName}*! 🙏";
+        $message = "✅ *Pagamento confirmado!*\n"
+            . "Seu pedido já foi enviado pra {$storeName}. 🔥\n\n"
+            . "📌 *Seu código de retirada: #{$order->code}*\n"
+            . "Guarde esse número — informe ao entregador quando ele chegar, é assim que a gente confirma que a entrega é sua.";
 
         try {
             // WhatsAppOrchestrator::sendStatusNotificationNow já troca a credencial FlowBridge

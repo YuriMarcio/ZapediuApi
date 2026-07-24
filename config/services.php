@@ -65,6 +65,24 @@ return [
     'maps_key' => env('GOOGLE_MAPS_API_KEY'),
 ],
 
+    // NLP de intenção na entrada do bot (spec §1) — classifica {intent, tipo, item, match}
+    // pra pular direto pro carrossel certo quando o cliente já pede algo na primeira mensagem.
+    // Gemini ficou sem quota liberada (free tier limit:0 no projeto Google) — Groq é quem
+    // roda esse classificador agora (ver App\Services\Nlp\GroqClient).
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+        'model' => env('GEMINI_MODEL', 'gemini-2.0-flash'),
+        'timeout' => (int) env('GEMINI_TIMEOUT_SECONDS', 4),
+        'enabled' => (bool) env('GEMINI_ENABLED', true),
+    ],
+
+    'groq' => [
+        'api_key' => env('GROQ_API_KEY'),
+        'model' => env('GROQ_MODEL', 'llama-3.3-70b-versatile'),
+        'timeout' => (int) env('GROQ_TIMEOUT_SECONDS', 4),
+        'enabled' => (bool) env('GROQ_ENABLED', true),
+    ],
+
     // Chaves de copy/config do motor de fluxo do chatbot (mensagens, paginação, grupo de
     // entregadores etc.) — agnósticas de provedor de transporte. Mantido o nome histórico
     // "zapi" para não inflar o diff da migração pra FlowBridge; ver App\Services\Zapi\*.

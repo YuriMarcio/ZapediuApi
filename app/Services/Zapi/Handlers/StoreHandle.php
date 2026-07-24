@@ -30,15 +30,6 @@ class StoreHandle
     }
 
     /**
-     * Problema 3: Delegando a formatação para o Builder
-     */
-    private function formatStoreCardText(Store $store): string
-    {
-        // Agora usamos o método público do Builder injetado
-        return $this->carouselBuilder->formatStoreCardText($store);
-    }
-
-    /**
      * Problema 3: Delegando a exibição de produtos para o Handler correto
      */
     public function sendProductsCarousel(string $phone, string $storeSlug, int $offset): bool
@@ -81,44 +72,23 @@ class StoreHandle
 
     private function searchStoreIds(string $query): array
     {
-        $normalizedQuery = trim((string) Str::of($query)->lower()->ascii()->toString());
-
-        $storesQuery = Store::query()
-            ->where('is_active', true)
-            ->with('category:id,name,slug');
-
-        if ($normalizedQuery !== '') {
-            $tokens = array_values(array_filter(explode(' ', $normalizedQuery)));
-
-            foreach ($tokens as $token) {
-                $storesQuery->where(function ($builder) use ($token): void {
-                    $like = '%'.$token.'%';
-
-                    $builder
-                        ->whereRaw('LOWER(name) LIKE ?', [$like])
-                        ->orWhereRaw('LOWER(slug) LIKE ?', [$like])
-                        ->orWhereRaw('LOWER(description) LIKE ?', [$like])
-                        ->orWhereRaw('LOWER(segment) LIKE ?', [$like])
-                        ->orWhereHas('category', fn ($categoryBuilder) => $categoryBuilder->whereRaw('LOWER(name) LIKE ?', [$like]));
-                });
-            }
-        }
-
-        return $storesQuery
-            ->orderBy('name')
-            ->distinct()
-            ->pluck('slug')
-            ->filter(fn (mixed $slug): bool => is_string($slug) && trim($slug) !== '')
-            ->values()
-            ->all();
+        return $this->search->byQuery($query);
     }
+
     public function sendStoresPage(string $phone, int $offset = 0, ?string $customTitle = null): bool
     {
         $state = $this->flow->getState($phone);
         $storeIds = array_values(array_filter($state['store_results'] ?? []));
 
         if ($storeIds === []) {
-            $storeIds = Store::query()->where('is_active', true)->orderBy('name')->pluck('slug')->toArray();
+            $storeIds = Store::query()
+                ->where('is_active', true)
+                ->with('company:id,is_open')
+                ->orderBy('name')
+                ->get()
+                ->filter(fn (Store $store): bool => $store->isOpenNow())
+                ->pluck('slug')
+                ->all();
         }
 
         // Usando a constante definida (Problema 1)
@@ -132,41 +102,24 @@ class StoreHandle
             ->where('is_active', true)
             ->whereIn('slug', $pageStoreIds)
             ->with('category:id,slug,name')
+            ->withPromotionFlag()
             ->get()
             ->keyBy('slug');
 
-        $cards = [];
-        foreach ($pageStoreIds as $storeId) {
-            $store = $stores->get($storeId);
-            if (!$store) {
-                continue;
-            }
+        $orderedStores = collect($pageStoreIds)
+            ->map(fn (string $slug) => $stores->get($slug))
+            ->filter();
 
-            $cards[] = [
-                'text' => $this->formatStoreCardText($store),
-                'image' => $store->logo_url ?? $store->cover_image_url ?? 'https://picsum.photos/seed/'.$store->slug.'/600/600',
-                'buttons' => [
-                    [
-                        'id' => 'view_menu_'.$store->slug,
-                        'label' => '📖 Ver Cardápio',
-                        'type' => 'REPLY',
-                    ],
-                ],
-            ];
-        }
+        $cards = $this->carouselBuilder->buildStoreCards($orderedStores);
 
         $nextOffset = $offset + count($pageStoreIds);
         if ($nextOffset < count($storeIds)) {
-            $cards[] = [
-                'text' => 'Ver mais lojas disponíveis',
-                'image' => 'https://picsum.photos/seed/mais-lojas/600/600',
-                'buttons' => [['id' => 'view_more_'.$nextOffset, 'label' => 'Ver mais', 'type' => 'REPLY']],
-            ];
+            $cards[] = $this->carouselBuilder->buildMoreStoresCard($nextOffset);
         }
 
         $state['store_offset'] = $offset;
         $this->saveFlowState($phone, $state);
-        $title = $customTitle ?? '🏪 Confira nossas lojas ativas:';
+        $title = $customTitle ?? '🏪 Lojas abertas agora:';
         try {
             $this->zapiClient->sendCarousel($phone, $title, $cards);
             return true;
@@ -175,11 +128,6 @@ class StoreHandle
             return false;
         }
     }
-//apagar 
-    private function buildStoreDeliveryFee(Store $store): float
-    {
-        return 8.00;
-    }
 
     public function selectStore(string $phone, string $storeSlug): bool
     {
@@ -187,13 +135,14 @@ class StoreHandle
         $store = Store::query()
             ->where('is_active', true)
             ->where('slug', $storeSlug)
+            ->with('company:id,is_open')
             ->withCount(['categories' => function ($query) {
                 $query->where('is_active', true); // Opcional: filtrar só categorias ativas
             }])
             ->first();
 
-        if (!$store) {
-            return false;
+        if (!$store || !$store->isOpenNow()) {
+            return $this->sendStoresPage($phone, 0);
         }
 
         // 2. Salva a loja selecionada no estado
@@ -215,7 +164,7 @@ class StoreHandle
     public function sendCategoriesCarousel(string $phone, string $storeSlug): bool
     {
         // Carrega a loja com as categorias
-        $store = Store::query()->where('slug', $storeSlug)->with('categories')->first();
+        $store = Store::query()->where('slug', $storeSlug)->with(['categories', 'category:id,slug'])->first();
 
         // Verificação de segurança caso as categorias tenham sumido entre o clique e o processamento
         if (!$store || $store->categories->isEmpty()) {
@@ -230,85 +179,32 @@ class StoreHandle
                 'buttons' => [
                     [
                         'id' => 'view_category_'.$category->slug,
-                        'label' => '📂 Ver produtos',
+                        'label' => '🍽️ Ver produtos',
                         'type' => 'REPLY',
                     ],
                 ],
             ];
         }
 
+        // Título com o emoji do nicho da loja (§2.2: "🍕 Escolha uma categoria:").
+        $emoji = $this->carouselBuilder->getCategoryEmoji($store->category?->slug);
+
         try {
-            $this->zapiClient->sendCarousel($phone, '🍟 *Escolha uma categoria:*', $cards);
+            $this->zapiClient->sendCarousel($phone, $emoji.' *Escolha uma categoria:*', $cards);
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send category carousel.', ['error' => $exception->getMessage()]);
             return false;
         }
     }
+
+    /**
+     * Produtos de uma categoria da loja — mesmo card/formato/paginação do carrossel geral de
+     * produtos (§5), só filtrado pela categoria (delegado ao ProductsHandler).
+     */
     public function sendProductsByCategoryCarousel(string $phone, string $storeSlug, string $categorySlug, int $offset = 0): bool
     {
-        $store = Store::query()->where('slug', $storeSlug)->first();
-        if (!$store) {
-            $this->zapiClient->sendText($phone, 'Loja não encontrada.');
-            return false;
-        }
-
-        $category = $store->categories()->where('slug', $categorySlug)->first();
-        if (!$category) {
-            $this->zapiClient->sendText($phone, 'Categoria não encontrada.');
-            return false;
-        }
-
-        // Busca produtos ativos da categoria na loja
-        $productsQuery = $category->products()
-            ->where('store_id', $store->id)
-            ->where('is_active', true)
-            ->orderBy('name');
-
-        $total = $productsQuery->count();
-        $products = $productsQuery->skip($offset)->take(self::STORE_PAGE_SIZE)->get();
-
-        if ($products->isEmpty()) {
-            $this->zapiClient->sendText($phone, 'Não há produtos nesta categoria.');
-            return true;
-        }
-
-        $cards = [];
-        foreach ($products as $product) {
-            $cards[] = [
-                'text' => $product->name,
-                'image' => $product->image_url ?? 'https://picsum.photos/seed/'.$product->slug.'/600/600',
-                'buttons' => [
-                    [
-                        'id' => 'flow_add1_'.$storeSlug.'_'.(int) $product->id,
-                        'label' => '➕ Adicionar',
-                        'type' => 'REPLY',
-                    ],
-                ],
-            ];
-        }
-
-        // Paginação: se houver mais produtos, adiciona card de "Ver mais"
-        if ($offset + self::STORE_PAGE_SIZE < $total) {
-            $cards[] = [
-                'text' => 'Ver mais produtos',
-                'image' => 'https://picsum.photos/seed/mais-produtos/600/600',
-                'buttons' => [
-                    [
-                        'id' => 'view_more_products_'.$storeSlug.'_'.$categorySlug.'_'.($offset + self::STORE_PAGE_SIZE),
-                        'label' => 'Ver mais',
-                        'type' => 'REPLY',
-                    ],
-                ],
-            ];
-        }
-
-        try {
-            $this->zapiClient->sendCarousel($phone, 'Produtos da categoria: '.$category->name, $cards);
-            return true;
-        } catch (\Throwable $exception) {
-            Log::warning('Failed to send products carousel.', ['error' => $exception->getMessage()]);
-            return false;
-        }
+        return app(\App\Services\Zapi\Handlers\ProductsHandler::class)
+            ->sendProductsCarousel($phone, $storeSlug, $offset, $categorySlug);
     }
 }

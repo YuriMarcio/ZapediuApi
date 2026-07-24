@@ -148,12 +148,10 @@ class PaymentWebhookController extends Controller
         }
 
         $storeName = $order->store?->name ?? 'a loja';
-        $message   = "✅ *Pagamento confirmado!*\n\n"
-            ."Seu pedido já está sendo preparado 🍔🔥\n\n"
-            ."📋 *Código do seu pedido:*\n"
-            ."`{$reference}`\n\n"
-            ."🛵 Quando o entregador chegar, confirme seu pedido com esse código.\n\n"
-            ."Obrigado por pediu na *{$storeName}*! 🙏";
+        $message   = "✅ *Pagamento confirmado!*\n"
+            ."Seu pedido já foi enviado pra {$storeName}. 🔥\n\n"
+            ."📌 *Seu código de retirada: #{$reference}*\n"
+            .'Guarde esse número — informe ao entregador quando ele chegar, é assim que a gente confirma que a entrega é sua.';
 
         try {
             app(\App\Services\Whatsapp\WhatsAppClientInterface::class)->sendText($customerPhone, $message);

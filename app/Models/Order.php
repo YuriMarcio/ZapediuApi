@@ -41,6 +41,7 @@ class Order extends Model
         'estimated_ready_at',
         'raw_payload',
         'group_message_id',
+        'reminder_sent_at',
     ];
 
     protected $casts = [
@@ -53,6 +54,7 @@ class Order extends Model
         'estimated_ready_at' => 'datetime',
         'raw_payload' => 'array',
         'status' => OrderStatus::class,
+        'reminder_sent_at' => 'datetime',
     ];
 
     /**

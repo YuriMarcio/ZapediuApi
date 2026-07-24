@@ -3,10 +3,13 @@
 namespace App\Models;
 
 use App\Models\Concerns\BelongsToCompany;
+use Carbon\CarbonImmutable;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Collection;
 use Spatie\MediaLibrary\HasMedia;
 use Spatie\MediaLibrary\InteractsWithMedia;
 use App\Models\Category;
@@ -49,6 +52,7 @@ class Store extends Model implements HasMedia
         'cnpj',
         'logo_url',
         'cover_image_url',
+        'carousel_banner_url',
         'menu_banner_url',
         'description',
         'zip_code',
@@ -64,6 +68,9 @@ class Store extends Model implements HasMedia
         'latitude',
         'longitude',
         'business_hours',
+        'delivery_radius_km',
+        'delivery_fee_per_km',
+        'delivery_fee_min',
     ];
 
     protected $casts = [
@@ -72,6 +79,9 @@ class Store extends Model implements HasMedia
         'business_hours' => 'array',
         'size_template' => 'array',
         'pizza_settings' => 'array',
+        'delivery_radius_km' => 'decimal:2',
+        'delivery_fee_per_km' => 'decimal:2',
+        'delivery_fee_min' => 'decimal:2',
     ];
 
     public const PIZZA_FLAVOR_PRICE_RULES = ['most_expensive', 'average'];
@@ -96,6 +106,87 @@ class Store extends Model implements HasMedia
     public function usesFlavorComboFlow(): bool
     {
         return $this->isFlavorMenuStore() && (int) $this->max_flavors >= 2;
+    }
+
+    /**
+     * Loja aberta agora: cruza o toggle manual da empresa (pausa) com o horário de
+     * funcionamento configurado (business_hours). Sem horário configurado, considera
+     * aberta por padrão (não esconder lojas antigas que ainda não preencheram isso).
+     * Requer `company` carregado (ex: `with('company:id,is_open')`) pra evitar N+1.
+     */
+    public function isOpenNow(): bool
+    {
+        if ($this->relationLoaded('company') && $this->company !== null && $this->company->is_open === false) {
+            return false;
+        }
+
+        $entries = $this->normalizedBusinessHours();
+        if ($entries === null) {
+            return true;
+        }
+
+        $now = CarbonImmutable::now($this->timezone ?: 'America/Sao_Paulo');
+
+        if ($this->isWithinDayWindow($now, $entries->get(strtolower($now->englishDayOfWeek)), $now)) {
+            return true;
+        }
+
+        // Janela de ontem que cruza a meia-noite (ex.: 22h-03h) ainda pode valer de madrugada
+        // hoje — sem isso, uma loja que fecha às 3h da manhã apareceria fechada às 2h.
+        $yesterday = $now->subDay();
+
+        return $this->isWithinDayWindow($yesterday, $entries->get(strtolower($yesterday->englishDayOfWeek)), $now);
+    }
+
+    /**
+     * `business_hours` aparece em dois formatos nos dados reais: lista
+     * `[{day, enabled, open, close}]` (o que `StoreHoursRequest` valida) e mapa
+     * `{monday: {open, close}, ...}` (dado antigo/importado, sem `day`/`enabled`). Normaliza
+     * os dois pra um mapa dia-da-semana => entry, ou `null` se não há nada configurado.
+     */
+    private function normalizedBusinessHours(): ?Collection
+    {
+        $hours = $this->business_hours;
+        if (! is_array($hours) || $hours === []) {
+            return null;
+        }
+
+        if (array_is_list($hours)) {
+            return collect($hours)->keyBy(fn ($h) => strtolower((string) ($h['day'] ?? '')));
+        }
+
+        return collect($hours)->mapWithKeys(fn ($entry, $day) => [strtolower((string) $day) => $entry]);
+    }
+
+    /**
+     * @param array{enabled?: bool, open?: string, close?: string}|null $entry
+     */
+    private function isWithinDayWindow(CarbonImmutable $referenceDay, ?array $entry, CarbonImmutable $now): bool
+    {
+        // `enabled` ausente = aberto nesse dia (dado antigo/importado não tem essa chave).
+        // Só fecha quando o lojista desativou o dia explicitamente (`enabled: false`).
+        if (! $entry || ($entry['enabled'] ?? true) === false || empty($entry['open']) || empty($entry['close'])) {
+            return false;
+        }
+
+        $open = $referenceDay->setTimeFromTimeString((string) $entry['open']);
+        $close = $referenceDay->setTimeFromTimeString((string) $entry['close']);
+
+        if ($close->lessThanOrEqualTo($open)) {
+            $close = $close->addDay();
+        }
+
+        return $now->between($open, $close);
+    }
+
+    public function scopeWithPromotionFlag(Builder $query): Builder
+    {
+        return $query->withExists(['products as has_active_promotion' => function (Builder $productsQuery): void {
+            $productsQuery
+                ->where('is_active', true)
+                ->whereNotNull('promotional_price')
+                ->whereColumn('promotional_price', '<', 'price');
+        }]);
     }
 
     /**

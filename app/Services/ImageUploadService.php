@@ -41,11 +41,18 @@ class ImageUploadService
         $image = Image::read($file->getPathname());
         $image->scaleDown(width: $maxWidth);
 
-        $webp = (string) $image->toWebp($quality);
+        return $this->uploadBinary((string) $image->toWebp($quality), $folder);
+    }
 
-        $path = $this->rootPrefix().trim($folder, '/').'/'.Str::uuid().'.webp';
+    /**
+     * Sobe bytes de imagem já prontos (ex.: banner composto em memória) sem exigir um
+     * UploadedFile de request — mesmo disco/prefixo do upload() normal.
+     */
+    public function uploadBinary(string $binary, string $folder, string $extension = 'webp'): string
+    {
+        $path = $this->rootPrefix().trim($folder, '/').'/'.Str::uuid().'.'.$extension;
         $disk = $this->disk();
-        Storage::disk($disk)->put($path, $webp, 'public');
+        Storage::disk($disk)->put($path, $binary, 'public');
 
         return Storage::disk($disk)->url($path);
     }

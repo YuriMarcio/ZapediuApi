@@ -4,13 +4,16 @@ namespace App\Services\Stores;
 
 use App\Models\Store;
 use App\Services\ImageUploadService;
+use App\Services\Media\StoreBannerComposer;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class StoreOnboardingService
 {
     public function __construct(
         private readonly ImageUploadService $imageUploader,
+        private readonly StoreBannerComposer $bannerComposer,
     ) {
     }
 
@@ -69,7 +72,24 @@ class StoreOnboardingService
         $folder = $store->mediaFolderName().'/perfil';
 
         if ($request->hasFile('logo')) {
-            $store->logo_url = $this->imageUploader->upload($request->file('logo'), $folder.'/logo', 600, 80);
+            $logoFile = $request->file('logo');
+            $store->logo_url = $this->imageUploader->upload($logoFile, $folder.'/logo', 600, 80);
+
+            // Lojista mandou logo nova mas não escolheu um banner de cardápio próprio: gera
+            // um banner padrão (logo centralizado sobre gradiente) em vez de deixar em
+            // branco — mesma composição usada no card do carrossel do WhatsApp.
+            if (! $request->hasFile('menu_banner') && blank($store->menu_banner_url)) {
+                try {
+                    $banner = $this->bannerComposer->compose(
+                        (string) file_get_contents($logoFile->getRealPath()),
+                        $store->category?->slug
+                    );
+
+                    $store->menu_banner_url = $this->imageUploader->uploadBinary($banner, $folder.'/banner-cardapio');
+                } catch (\Throwable $e) {
+                    Log::warning('Falha ao gerar banner de cardápio padrão.', ['store_id' => $store->id, 'error' => $e->getMessage()]);
+                }
+            }
         }
 
         if ($request->hasFile('cover')) {

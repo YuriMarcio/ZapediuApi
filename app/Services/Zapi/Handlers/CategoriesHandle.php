@@ -4,6 +4,7 @@ namespace App\Services\Zapi\Handlers;
 
 use App\Models\Category;
 use App\Models\Store;
+use App\Services\Zapi\Builders\StoreCarouselBuilder;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\StoreSearch;
 use App\Services\Whatsapp\WhatsAppClientInterface;
@@ -16,7 +17,8 @@ class CategoriesHandle
         private StoreSearch $search,
         private WhatsAppClientInterface $zapiClient,
         // Injetando StoreHandle para resolver o problema 4
-        private StoreHandle $storeHandle
+        private StoreHandle $storeHandle,
+        private StoreCarouselBuilder $carouselBuilder
     ) {
     }
 
@@ -28,23 +30,6 @@ class CategoriesHandle
         $this->flow->saveState($phone, $state);
     }
 
-    private function buildCategoryHeader(Category $category): string
-    {
-        return "📂 *Categoria: {$category->name}*\n\nConfira as lojas disponíveis abaixo:";
-    }
-
-    private function buttonSlugFromCategorySlug(string $slug): string
-    {
-        // Garante que o slug não tenha o prefixo duplicado para o ID do botão
-        return str_replace('cat_', '', $slug);
-    }
-
-    private function formatStoreCardText(Store $store): string
-    {
-        // Stub de formatação para o card da loja (reutilizando padrão do sistema)
-        $rating = "⭐ 4.8"; // Em prod: $store->rating
-        return "🏪 *{$store->name}*\n{$rating} • 🛵 30-45 min";
-    }
     /**
        * Resolve o problema 4: Delega para o StoreHandle que possui a lógica de paginação
        */
@@ -60,8 +45,12 @@ class CategoriesHandle
 
    public function sendCategoryStores(string $phone, string $categoryId): bool
     {
+        // whereNull('store_id') — só a categoria "global" de classificação da loja (ex.:
+        // cat_pizza), nunca uma categoria de cardápio interna de uma loja (ex.: "Combos" da
+        // Forno Veloz), que teria zero lojas vinculadas por category_id.
         $category = Category::query()
             ->where('is_active', true)
+            ->whereNull('store_id')
             ->where('slug', $categoryId)
             ->first();
 
@@ -73,22 +62,30 @@ class CategoriesHandle
         $stores = Store::query()
             ->where('is_active', true)
             ->where('category_id', $category->id)
+            ->with(['company:id,is_open', 'category:id,slug,name'])
+            ->withPromotionFlag()
             ->orderBy('name')
-            ->limit($limit)
-            ->get();
+            ->get()
+            ->filter(fn (Store $store): bool => $store->isOpenNow())
+            ->take($limit)
+            ->values();
 
         return $this->sendStoreCarouselFromCollection(
-            $phone, 
-            $stores, 
-            $this->buildCategoryHeader($category), 
+            $phone,
+            $stores,
+            $this->carouselBuilder->buildCategoryHeader($category),
             true
         );
     }
 
     public function sendCategoriesCarousel(string $phone): bool
     {
+        // whereNull('store_id') — só o catálogo global de classificação (cat_lanches,
+        // cat_pizza, cat_acai...), nunca as categorias de cardápio internas de cada loja
+        // (ex.: "Combos", "Bebidas"), que não têm sentido nesse carrossel de entrada.
         $categories = Category::query()
             ->where('is_active', true)
+            ->whereNull('store_id')
             ->orderBy('ordem_exibicao')
             ->limit(10)
             ->get();
@@ -99,13 +96,16 @@ class CategoriesHandle
 
         $cards = [];
         foreach ($categories as $category) {
+            $emoji = $this->carouselBuilder->getCategoryEmoji((string) $category->slug);
+            $name = mb_convert_case(mb_strtolower((string) $category->name), MB_CASE_TITLE, 'UTF-8');
+
             $cards[] = [
-                'text' => "📂 " . $category->name,
+                'text' => "{$emoji} {$name}",
                 'image' => $category->image_url ?: 'https://picsum.photos/seed/cat-'.$category->id.'/600/600',
                 'buttons' => [
                     [
-                        'id' => 'buscar_cat_' . $this->buttonSlugFromCategorySlug((string) $category->slug),
-                        'label' => 'Ver lojas',
+                        'id' => 'buscar_cat_' . $this->carouselBuilder->buttonSlugFromCategorySlug((string) $category->slug),
+                        'label' => '🏪 Ver Lojas',
                         'type' => 'REPLY',
                     ],
                 ],
@@ -113,7 +113,7 @@ class CategoriesHandle
         }
 
         try {
-            $this->zapiClient->sendCarousel($phone, 'Escolha uma categoria para ver as lojas:', $cards);
+            $this->zapiClient->sendCarousel($phone, '🍔 *Escolha uma categoria:*', $cards);
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send categories carousel.', ['error' => $exception->getMessage()]);
@@ -169,7 +169,7 @@ class CategoriesHandle
 
         foreach ($stores as $store) {
             $cards[] = [
-                'text' => $this->formatStoreCardText($store),
+                'text' => $this->carouselBuilder->formatStoreCardText($store),
                 'image' => $store->logo_url
                     ?? $store->cover_image_url
                     ?? 'https://picsum.photos/seed/loja-'.$store->id.'/600/600',
@@ -222,6 +222,7 @@ class CategoriesHandle
 
         $direct = Category::query()
             ->where('is_active', true)
+            ->whereNull('store_id')
             ->where('slug', $normalized)
             ->first();
 
@@ -231,6 +232,7 @@ class CategoriesHandle
 
         $prefixed = Category::query()
             ->where('is_active', true)
+            ->whereNull('store_id')
             ->where('slug', 'cat_'.$normalized)
             ->first();
 
@@ -246,9 +248,13 @@ class CategoriesHandle
     {
         $stores = Store::query()
             ->where('is_active', true)
+            ->with(['company:id,is_open', 'category:id,slug,name'])
+            ->withPromotionFlag()
             ->orderBy('name')
-            ->limit(10)
-            ->get();
+            ->get()
+            ->filter(fn (Store $store): bool => $store->isOpenNow())
+            ->take(10)
+            ->values();
 
         try {
             $this->zapiClient->sendText($phone, $notice);

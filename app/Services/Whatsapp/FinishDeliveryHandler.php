@@ -66,14 +66,16 @@ class FinishDeliveryHandler
             if ($customerPhone) {
                 // Reset customer session
                 $this->flow->resetState($customerPhone);
-                
-                // Send thank you message
-                $message = "🎉 *Pedido ENTREGUE!*\n\n";
-                $message .= "Seu pedido #{$order->code} foi entregue com sucesso!\n\n";
-                $message .= "Obrigado por escolher Zapediu! 🛵💨\n\n";
-                $message .= "Deseja fazer outro pedido? Digite *oi* para começar!";
-                
-                $zapi->sendText($customerPhone, $message);
+
+                // §14.4 do documento — pedido entregue + convite de avaliação
+                $storeName = $order->store?->name ?? 'a loja';
+                $message = "🎉 *Pedido entregue!*\n";
+                $message .= "Esperamos do fundo do coração que você tenha gostado. 💚\n\n";
+                $message .= "Se puder, deixa um feedback rápido pra {$storeName} sobre o pedido — isso ajuda a loja a continuar melhorando:";
+
+                $zapi->sendButtonActions($customerPhone, $message, [
+                    ['id' => 'rate_order_'.$order->id, 'label' => '⭐ Avaliar Pedido'],
+                ]);
                 
                 Log::info("Customer session reset and thank you sent for order {$order->code}", [
                     'customer_phone' => $customerPhone,

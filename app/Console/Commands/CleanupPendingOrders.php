@@ -51,6 +51,10 @@ class CleanupPendingOrders extends Command
      */
     private function processExpiredOrder(Order $order, FlowManager $flow, WhatsAppClientInterface $zapiClient): void
     {
+        // Comando roda sem TenantContext: seta a company do pedido pra resolver a instância
+        // WhatsApp certa em vez da default do .env (ver FlowBridgeClient::instanceId).
+        app(\App\Support\Tenancy\TenantContext::class)->setCompanyId($order->company_id ? (int) $order->company_id : null);
+
         try {
             // Get customer phone
             $customerPhone = $order->user?->phone;
