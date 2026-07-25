@@ -19,16 +19,40 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-RUN echo "upload_max_filesize=20M\npost_max_size=22M\nmemory_limit=256M" > /usr/local/etc/php/conf.d/uploads.ini
+RUN echo "upload_max_filesize=20M\npost_max_size=22M\nmemory_limit=256M" \
+    > /usr/local/etc/php/conf.d/uploads.ini
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
-RUN groupmod -g ${GID} www-data && usermod -u ${UID} -g ${GID} www-data
+RUN groupmod -g ${GID} www-data \
+    && usermod -u ${UID} -g ${GID} www-data
 
 WORKDIR /var/www/html
 
+COPY composer.json composer.lock ./
+
+RUN composer install \
+    --no-dev \
+    --no-interaction \
+    --prefer-dist \
+    --optimize-autoloader \
+    --no-scripts
+
+COPY . .
+
+RUN mkdir -p \
+    storage/framework/cache \
+    storage/framework/sessions \
+    storage/framework/views \
+    storage/logs \
+    bootstrap/cache \
+    && chown -R www-data:www-data /var/www/html
+
 COPY docker/php/entrypoint.sh /usr/local/bin/entrypoint
-RUN chmod +x /usr/local/bin/entrypoint
+
+RUN sed -i 's/\r$//' /usr/local/bin/entrypoint \
+    && chmod +x /usr/local/bin/entrypoint
 
 ENTRYPOINT ["/usr/local/bin/entrypoint"]
+
 CMD ["php-fpm"]
