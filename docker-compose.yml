@@ -1,33 +1,78 @@
+x-laravel-environment: &laravel-environment
+  APP_NAME: "${APP_NAME:-Zapediu}"
+  APP_ENV: "${APP_ENV:-production}"
+  APP_KEY: "${APP_KEY}"
+  APP_DEBUG: "${APP_DEBUG:-false}"
+  APP_URL: "${APP_URL:-https://api.zapediu.com}"
+  FRONTEND_URL: "${FRONTEND_URL}"
+
+  LOG_CHANNEL: "${LOG_CHANNEL:-stack}"
+  LOG_STACK: "${LOG_STACK:-single}"
+  LOG_LEVEL: "${LOG_LEVEL:-warning}"
+
+  DB_CONNECTION: mysql
+  DB_HOST: db
+  DB_PORT: 3306
+  DB_DATABASE: "${DB_DATABASE}"
+  DB_USERNAME: "${DB_USERNAME}"
+  DB_PASSWORD: "${DB_PASSWORD}"
+
+  REDIS_CLIENT: phpredis
+  REDIS_HOST: redis
+  REDIS_PASSWORD: null
+  REDIS_PORT: 6379
+
+  SESSION_DRIVER: database
+  SESSION_LIFETIME: 120
+  SESSION_ENCRYPT: "false"
+  SESSION_PATH: /
+  SESSION_DOMAIN: "${SESSION_DOMAIN:-.zapediu.com}"
+
+  BROADCAST_CONNECTION: log
+  FILESYSTEM_DISK: local
+  QUEUE_CONNECTION: database
+  CACHE_STORE: database
+
+  ADMIN_API_TOKEN: "${ADMIN_API_TOKEN}"
+
+  ZAPI_BASE_URL: "${ZAPI_BASE_URL:-https://api.z-api.io}"
+  ZAPI_INSTANCE_ID: "${ZAPI_INSTANCE_ID}"
+  ZAPI_INSTANCE_TOKEN: "${ZAPI_INSTANCE_TOKEN}"
+  ZAPI_CLIENT_TOKEN: "${ZAPI_CLIENT_TOKEN}"
+  ZAPI_WEBHOOK_TOKEN: "${ZAPI_WEBHOOK_TOKEN}"
+  ZAPI_AUTO_REPLY_ENABLED: "${ZAPI_AUTO_REPLY_ENABLED:-true}"
+  ZAPI_CAROUSEL_ENABLED: "${ZAPI_CAROUSEL_ENABLED:-true}"
+  ZAPI_PAYMENT_BASE_URL: "${ZAPI_PAYMENT_BASE_URL}"
+
+  MP_WEBHOOK_SECRET: "${MP_WEBHOOK_SECRET}"
+  MERCADO_PAGO_ACCESS_TOKEN: "${MERCADO_PAGO_ACCESS_TOKEN}"
+
 services:
   app:
     build:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
-    container_name: deliveryzapapi-app
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./:/var/www/html
-    environment:
-      APP_ENV: local
-      APP_DEBUG: "true"
+    environment: *laravel-environment
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
       - delivery-net
 
   nginx:
     image: nginx:1.27-alpine
-    container_name: deliveryzapapi-nginx
     restart: unless-stopped
-    ports:
-      - "8080:80"
+    expose:
+      - "80"
     volumes:
       - ./:/var/www/html
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
@@ -38,44 +83,42 @@ services:
 
   db:
     image: mysql:8.4
-    container_name: deliveryzapapi-db
     restart: unless-stopped
     environment:
-      MYSQL_DATABASE: ${DB_DATABASE:-deliveryzap}
-      MYSQL_USER: ${DB_USERNAME:-deliveryzap}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-secret}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: "${DB_DATABASE}"
+      MYSQL_USER: "${DB_USERNAME}"
+      MYSQL_PASSWORD: "${DB_PASSWORD}"
+      MYSQL_ROOT_PASSWORD: "${DB_ROOT_PASSWORD}"
     volumes:
       - db_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-p${DB_ROOT_PASSWORD:-root}"]
-      timeout: 5s
-      retries: 12
+      test:
+        - CMD-SHELL
+        - "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"
       interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
     networks:
       - delivery-net
 
-  # 👉 SERVIÇO REDIS ADICIONADO
   redis:
-    image: redis:alpine
-    container_name: deliveryzapapi-redis
+    image: redis:7-alpine
     restart: unless-stopped
-    networks:
-      - delivery-net
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+    volumes:
+      - redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test:
+        - CMD
+        - redis-cli
+        - ping
       interval: 5s
       timeout: 3s
-      retries: 5
-
-  adminer:
-    image: adminer:5
-    container_name: deliveryzapapi-adminer
-    restart: unless-stopped
-    ports:
-      - "8081:8080"
-    depends_on:
-      - db
+      retries: 10
     networks:
       - delivery-net
 
@@ -84,43 +127,43 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: ${UID:-1000}
-        GID: ${GID:-1000}
-    container_name: deliveryzapapi-worker
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     command: php artisan queue:work --sleep=3 --tries=3 --timeout=60
     volumes:
       - ./:/var/www/html
-    environment:
-      APP_ENV: local
-      APP_DEBUG: "true"
+    environment: *laravel-environment
     depends_on:
       db:
         condition: service_healthy
       redis:
-        condition: service_started
+        condition: service_healthy
     networks:
       - delivery-net
 
-  ngrok:
-    image: ngrok/ngrok:latest
-    container_name: deliveryzapapi-ngrok
+  adminer:
+    image: adminer:5
     restart: unless-stopped
-    command: http --log stdout --pooling-enabled host.docker.internal:8080
+    expose:
+      - "8080"
     environment:
-      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:-}
-    ports:
-      - "4041:4040"
-    extra_hosts:
-      - "host.docker.internal:host-gateway"
+      ADMINER_DEFAULT_SERVER: db
+    labels:
+      com.zapediu.role: adminer
     depends_on:
-      - nginx
+      db:
+        condition: service_healthy
     networks:
       - delivery-net
 
 volumes:
   db_data:
+    external: true
+    name: zapediuapi_db_data
+
+  redis_data:
 
 networks:
   delivery-net:
