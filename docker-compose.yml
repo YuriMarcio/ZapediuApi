@@ -122,25 +122,25 @@ services:
       - delivery-net
 
   worker:
-  build:
-    context: .
-    dockerfile: docker/php/Dockerfile
-    args:
-      UID: "${UID:-1000}"
-      GID: "${GID:-1000}"
-  restart: unless-stopped
-  user: "${UID:-1000}:${GID:-1000}"
-  command: php artisan queue:work --sleep=3 --tries=3 --timeout=60
-  environment:
-    <<: *laravel-environment
-    RUN_MIGRATIONS: "false"
-  depends_on:
-    db:
-      condition: service_healthy
-    redis:
-      condition: service_healthy
-  networks:
-    - delivery-net
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: php artisan queue:work --sleep=3 --tries=3 --timeout=60
+    environment:
+      <<: *laravel-environment
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - delivery-net
 
   adminer:
     image: adminer:5
