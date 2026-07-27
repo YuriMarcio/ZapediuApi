@@ -35,14 +35,18 @@ return [
         ],
     ],
 
-    'whatsapp' => [
-        'provider' => env('WHATSAPP_PROVIDER', 'zapi'),
-    ],
-
-    'evolution' => [
-        'base_url' => env('EVOLUTION_API_URL'),
-        'api_key' => env('EVOLUTION_API_KEY'),
-        'instance' => env('EVOLUTION_INSTANCE_NAME', 'default'),
+    'flowbridge' => [
+        'base_url' => env('FLOWBRIDGE_API_URL'),
+        'api_key' => env('FLOWBRIDGE_API_KEY'),
+        'instance_id' => env('FLOWBRIDGE_INSTANCE_ID'),
+        'timeout' => (int) env('FLOWBRIDGE_TIMEOUT', 15),
+        // Token no path de /api/webhooks/flowbridge/{token} — o FlowBridge não assina o POST
+        // que manda pro callbackUrl, então esse token é a única barreira contra spoofing.
+        'webhook_secret' => env('FLOWBRIDGE_WEBHOOK_SECRET'),
+        // URL usada pra montar o callbackUrl que o FlowBridge chama de volta. Precisa ser
+        // alcançável a partir de ONDE O FLOWBRIDGE RODA — em dev local o FlowBridge é remoto,
+        // então APP_URL (localhost:8080) não serve; usar a URL pública do túnel (ngrok etc.).
+        'callback_base_url' => env('FLOWBRIDGE_CALLBACK_BASE_URL', env('APP_URL')),
     ],
 
     'mercadopago' => [
@@ -61,12 +65,28 @@ return [
     'maps_key' => env('GOOGLE_MAPS_API_KEY'),
 ],
 
+    // NLP de intenção na entrada do bot (spec §1) — classifica {intent, tipo, item, match}
+    // pra pular direto pro carrossel certo quando o cliente já pede algo na primeira mensagem.
+    // Gemini ficou sem quota liberada (free tier limit:0 no projeto Google) — Groq é quem
+    // roda esse classificador agora (ver App\Services\Nlp\GroqClient).
+    'gemini' => [
+        'api_key' => env('GEMINI_API_KEY'),
+        'model' => env('GEMINI_MODEL', 'gemini-2.0-flash'),
+        'timeout' => (int) env('GEMINI_TIMEOUT_SECONDS', 4),
+        'enabled' => (bool) env('GEMINI_ENABLED', true),
+    ],
+
+    'groq' => [
+        'api_key' => env('GROQ_API_KEY'),
+        'model' => env('GROQ_MODEL', 'llama-3.3-70b-versatile'),
+        'timeout' => (int) env('GROQ_TIMEOUT_SECONDS', 4),
+        'enabled' => (bool) env('GROQ_ENABLED', true),
+    ],
+
+    // Chaves de copy/config do motor de fluxo do chatbot (mensagens, paginação, grupo de
+    // entregadores etc.) — agnósticas de provedor de transporte. Mantido o nome histórico
+    // "zapi" para não inflar o diff da migração pra FlowBridge; ver App\Services\Zapi\*.
     'zapi' => [
-        'base_url' => env('ZAPI_BASE_URL', 'https://api.z-api.io'),
-        'instance_id' => env('ZAPI_INSTANCE_ID'),
-        'instance_token' => env('ZAPI_INSTANCE_TOKEN', env('ZAPI_TOKEN')),
-        'client_token' => env('ZAPI_CLIENT_TOKEN'),
-        'webhook_token' => env('ZAPI_WEBHOOK_TOKEN'),
         'auto_reply_enabled' => (bool) env('ZAPI_AUTO_REPLY_ENABLED', true),
         'carousel_enabled' => (bool) env('ZAPI_CAROUSEL_ENABLED', true),
         'carousel_intro' => env('ZAPI_CAROUSEL_INTRO', 'Confira nosso cardapio e escolha seu favorito:'),
@@ -77,13 +97,7 @@ return [
         'list_button_text' => env('ZAPI_LIST_BUTTON_TEXT', 'Ver Cardapio'),
         'list_title' => env('ZAPI_LIST_TITLE', 'Categorias Disponiveis'),
         'list_description' => env('ZAPI_LIST_DESCRIPTION', 'Clique no botao abaixo para navegar.'),
-        'catalog_phone' => env('ZAPI_CATALOG_PHONE'),
-        'catalog_translation' => env('ZAPI_CATALOG_TRANSLATION', 'PT'),
         'drivers_group_jid' => env('ZAPI_DRIVERS_GROUP_JID'),
-        'catalog_message' => env('ZAPI_CATALOG_MESSAGE', 'Acesse nosso catalogo no WhatsApp:'),
-        'catalog_title' => env('ZAPI_CATALOG_TITLE', 'Catalogo de produtos'),
-        'catalog_description' => env('ZAPI_CATALOG_DESCRIPTION', 'Toque para visualizar nossos produtos.'),
-        'product_id' => env('ZAPI_PRODUCT_ID'),
         'flow_welcome_message' => env('ZAPI_FLOW_WELCOME_MESSAGE', 'Ola, digite o que procura ou digite filtro.'),
         'flow_state_ttl_minutes' => (int) env('ZAPI_FLOW_STATE_TTL_MINUTES', 180),
         'flow_more_image' => env('ZAPI_FLOW_MORE_IMAGE', 'https://picsum.photos/seed/mais-lojas/600/600'),

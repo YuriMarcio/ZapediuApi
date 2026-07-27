@@ -245,20 +245,19 @@ class MercadoPagoPaymentService
     /**
      * Processa uma notificação de webhook do Mercado Pago
      *
-     * @param Request $request
+     * @param array $webhookData
      * @return array
      */
-    public function processWebhook(Request $request): array
+    public function processWebhook(array $webhookData): array
     {
-        $type = $request->input('type');
-        $action = $request->input('action');
-        $paymentId = $request->input('data.id');
+        $type = data_get($webhookData, 'type');
+        $action = data_get($webhookData, 'action');
+        $paymentId = data_get($webhookData, 'data.id');
 
         Log::info('MercadoPago Webhook Received', [
             'type' => $type,
             'action' => $action,
             'payment_id' => $paymentId,
-            'request_id' => $request->header('x-request-id')
         ]);
 
         // Só processamos notificações de pagamento

@@ -137,28 +137,24 @@ class PaymentWebhookController extends Controller
             return response()->json(['ok' => true, 'notified' => false]);
         }
 
-        // Configure Z-API credentials from the order's company
+        // Configure FlowBridge credentials from the order's company
         if ($order->company_id) {
             /** @var \App\Models\Company|null $company */
             $company = \App\Models\Company::query()->find($order->company_id);
 
-            if ($company !== null) {
-                if ($company->zapi_instance_id)    { config()->set('services.zapi.instance_id',    $company->zapi_instance_id); }
-                if ($company->zapi_instance_token) { config()->set('services.zapi.instance_token', $company->zapi_instance_token); }
-                if ($company->zapi_client_token)   { config()->set('services.zapi.client_token',   $company->zapi_client_token); }
+            if ($company !== null && $company->flowbridge_instance_id) {
+                config()->set('services.flowbridge.instance_id', $company->flowbridge_instance_id);
             }
         }
 
         $storeName = $order->store?->name ?? 'a loja';
-        $message   = "✅ *Pagamento confirmado!*\n\n"
-            ."Seu pedido já está sendo preparado 🍔🔥\n\n"
-            ."📋 *Código do seu pedido:*\n"
-            ."`{$reference}`\n\n"
-            ."🛵 Quando o entregador chegar, confirme seu pedido com esse código.\n\n"
-            ."Obrigado por pediu na *{$storeName}*! 🙏";
+        $message   = "✅ *Pagamento confirmado!*\n"
+            ."Seu pedido já foi enviado pra {$storeName}. 🔥\n\n"
+            ."📌 *Seu código de retirada: #{$reference}*\n"
+            .'Guarde esse número — informe ao entregador quando ele chegar, é assim que a gente confirma que a entrega é sua.';
 
         try {
-            app(\App\Services\Zapi\ZapiClient::class)->sendText($customerPhone, $message);
+            app(\App\Services\Whatsapp\WhatsAppClientInterface::class)->sendText($customerPhone, $message);
         } catch (\Throwable $exception) {
             Log::warning('PaymentWebhook: failed to send WhatsApp confirmation.', [
                 'order_code' => $reference,

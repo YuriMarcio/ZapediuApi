@@ -34,7 +34,7 @@ class ProcessIncomingWebhookAction
 
         $event = WebhookEvent::query()->create([
             'company_id' => $company?->id,
-            'provider' => 'zapi',
+            'provider' => 'flowbridge',
             'event_type' => (string) data_get($payload, 'event', 'message.received'),
             'external_id' => (string) (data_get($payload, 'messageId') ?? data_get($payload, 'order.id') ?? ''),
             'payload' => $payload,
@@ -50,12 +50,10 @@ class ProcessIncomingWebhookAction
         }
 
         if ($company !== null) {
-            config()->set('services.zapi.instance_id', $company->zapi_instance_id ?: config('services.zapi.instance_id'));
-            config()->set('services.zapi.instance_token', $company->zapi_instance_token ?: config('services.zapi.instance_token'));
-            config()->set('services.zapi.client_token', $company->zapi_client_token ?: config('services.zapi.client_token'));
+            config()->set('services.flowbridge.instance_id', $company->flowbridge_instance_id ?: config('services.flowbridge.instance_id'));
         }
 
-        $this->sendEvolutionReply($payload);
+        $this->zapiWebhookService->maybeSendAutoReply($payload);
 
         return $event;
     }
@@ -72,7 +70,7 @@ class ProcessIncomingWebhookAction
         $instanceId = (string) data_get($payload, 'instanceId', data_get($payload, 'instance.id', ''));
 
         if ($instanceId !== '') {
-            return Company::query()->where('zapi_instance_id', $instanceId)->first();
+            return Company::query()->where('flowbridge_instance_id', $instanceId)->first();
         }
 
         return null;

@@ -4,7 +4,7 @@ namespace App\Console\Commands;
 
 use App\Models\Order;
 use App\Services\Zapi\Flows\FlowManager;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use Illuminate\Console\Command;
 use Illuminate\Support\Facades\Log;
 
@@ -27,7 +27,7 @@ class CleanupPendingOrders extends Command
     /**
      * Execute the console command.
      */
-    public function handle(FlowManager $flow, ZapiClient $zapiClient): void
+    public function handle(FlowManager $flow, WhatsAppClientInterface $zapiClient): void
     {
         $this->info('Starting cleanup of pending orders older than 50 minutes...');
 
@@ -49,8 +49,12 @@ class CleanupPendingOrders extends Command
     /**
      * Process a single expired order
      */
-    private function processExpiredOrder(Order $order, FlowManager $flow, ZapiClient $zapiClient): void
+    private function processExpiredOrder(Order $order, FlowManager $flow, WhatsAppClientInterface $zapiClient): void
     {
+        // Comando roda sem TenantContext: seta a company do pedido pra resolver a instância
+        // WhatsApp certa em vez da default do .env (ver FlowBridgeClient::instanceId).
+        app(\App\Support\Tenancy\TenantContext::class)->setCompanyId($order->company_id ? (int) $order->company_id : null);
+
         try {
             // Get customer phone
             $customerPhone = $order->user?->phone;
@@ -93,7 +97,7 @@ class CleanupPendingOrders extends Command
     /**
      * Notify customer about expired payment link
      */
-    private function notifyCustomer(string $phone, Order $order, ZapiClient $zapiClient): void
+    private function notifyCustomer(string $phone, Order $order, WhatsAppClientInterface $zapiClient): void
     {
         try {
             $message = "⏰ *Link de pagamento expirado*\n\n";

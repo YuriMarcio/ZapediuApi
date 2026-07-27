@@ -14,6 +14,7 @@
         "league/flysystem-aws-s3-v3": "^3.0",
         "mercadopago/dx-php": "^3.9",
         "predis/predis": "^3.4",
+        "resend/resend-php": "^1.5",
         "spatie/laravel-medialibrary": "^11.21",
         "tymon/jwt-auth": "^2.3"
     },

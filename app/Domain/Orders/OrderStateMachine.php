@@ -15,7 +15,7 @@ class OrderStateMachine
 {
     public function transition(Order $order, string $targetState): bool
     {
-        $state = $this->resolveState((string) $order->status);
+        $state = $this->resolveState($order->statusValue());
 
         if (! $state->canTransitionTo($targetState)) {
             return false;
@@ -30,12 +30,16 @@ class OrderStateMachine
     private function resolveState(string $value): OrderState
     {
         return match ($value) {
-            'accepted' => new ConfirmedOrderState(),
-            'preparing' => new PreparingOrderState(),
-            'delivering' => new OutForDeliveryOrderState(),
-            'done' => new DeliveredOrderState(),
-            'cancelled' => new CancelledOrderState(),
-            default => new PendingOrderState(),
+            'accepted' => new ConfirmedOrderState,
+            // 'preparToDelivery' (App\Enums\OrderStatus::PreparToDelivery) é setado quando a
+            // loja termina o preparo e o pedido é transmitido pro grupo de entregadores
+            // (App\Observers\OrderObserver); a única transição válida a partir daí é pra
+            // 'delivering' (motoboy aceita) ou 'cancelled' — mesmo conjunto de 'preparing'.
+            'preparing', 'preparToDelivery' => new PreparingOrderState,
+            'delivering' => new OutForDeliveryOrderState,
+            'done' => new DeliveredOrderState,
+            'cancelled' => new CancelledOrderState,
+            default => new PendingOrderState,
         };
     }
 }

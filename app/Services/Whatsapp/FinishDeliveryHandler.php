@@ -3,7 +3,7 @@
 namespace App\Services\Whatsapp;
 
 use App\Models\Order;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
 use Illuminate\Support\Facades\Redis;
 use Illuminate\Support\Facades\Log;
@@ -15,7 +15,7 @@ class FinishDeliveryHandler
     ) {
     }
 
-    public function handle(string $driverPhone, int $orderId, string $typedCode, ZapiClient $zapi): void
+    public function handle(string $driverPhone, int $orderId, string $typedCode, WhatsAppClientInterface $zapi): void
     {
         $order = Order::find($orderId);
 
@@ -54,7 +54,7 @@ class FinishDeliveryHandler
     /**
      * Reset customer session and send thank you message
      */
-    private function resetCustomerSession(Order $order, ZapiClient $zapi): void
+    private function resetCustomerSession(Order $order, WhatsAppClientInterface $zapi): void
     {
         try {
             // Get customer phone from order
@@ -66,14 +66,16 @@ class FinishDeliveryHandler
             if ($customerPhone) {
                 // Reset customer session
                 $this->flow->resetState($customerPhone);
-                
-                // Send thank you message
-                $message = "🎉 *Pedido ENTREGUE!*\n\n";
-                $message .= "Seu pedido #{$order->code} foi entregue com sucesso!\n\n";
-                $message .= "Obrigado por escolher Zapediu! 🛵💨\n\n";
-                $message .= "Deseja fazer outro pedido? Digite *oi* para começar!";
-                
-                $zapi->sendText($customerPhone, $message);
+
+                // §14.4 do documento — pedido entregue + convite de avaliação
+                $storeName = $order->store?->name ?? 'a loja';
+                $message = "🎉 *Pedido entregue!*\n";
+                $message .= "Esperamos do fundo do coração que você tenha gostado. 💚\n\n";
+                $message .= "Se puder, deixa um feedback rápido pra {$storeName} sobre o pedido — isso ajuda a loja a continuar melhorando:";
+
+                $zapi->sendButtonActions($customerPhone, $message, [
+                    ['id' => 'rate_order_'.$order->id, 'label' => '⭐ Avaliar Pedido'],
+                ]);
                 
                 Log::info("Customer session reset and thank you sent for order {$order->code}", [
                     'customer_phone' => $customerPhone,

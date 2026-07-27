@@ -14,13 +14,16 @@ class Category extends Model
 
     protected $fillable = [
         'company_id',
+        'store_id',
         'name',
         'icon',
+        'description',
         'slug',
         'image_url',
         'ordem_exibicao',
         'color',
         'is_active',
+        'category_type',
     ];
 
     protected $casts = [
@@ -62,5 +65,15 @@ class Category extends Model
     public function optionalFlows(): MorphToMany
     {
         return $this->morphToMany(OptionalFlow::class, 'assignable', 'optional_flow_assignments');
+    }
+
+    public function pizzaSizePrices(): HasMany
+    {
+        return $this->hasMany(CategoryPizzaSizePrice::class);
+    }
+
+    public function isPizzaCategory(): bool
+    {
+        return $this->category_type === 'pizza';
     }
 }

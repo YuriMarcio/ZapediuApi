@@ -197,12 +197,15 @@ class DashboardService
         $rows = collect($rows)->sortByDesc('revenue')->values();
         $total = (float) $rows->sum('revenue');
 
-        return $rows->map(fn (array $row) => [
-            'category' => $row['category'],
-            'color' => $row['color'],
-            'revenue' => round($row['revenue'], 2),
-            'pct' => $total > 0 ? round(($row['revenue'] / $total) * 100, 1) : 0.0,
-        ])->all() + ['total' => round($total, 2)];
+        return [
+            'categories' => $rows->map(fn (array $row) => [
+                'category' => $row['category'],
+                'color' => $row['color'],
+                'revenue' => round($row['revenue'], 2),
+                'pct' => $total > 0 ? round(($row['revenue'] / $total) * 100, 1) : 0.0,
+            ])->all(),
+            'total' => round($total, 2),
+        ];
     }
 
     // ── Monthly revenue (chart) ───────────────────────────────────────────────

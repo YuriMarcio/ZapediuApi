@@ -10,8 +10,29 @@ use Intervention\Image\Laravel\Facades\Image;
 class ImageUploadService
 {
     /**
-     * Compresses, resizes and uploads an image to R2.
+     * Uses R2 when it's actually configured; falls back to the local "public"
+     * disk otherwise (e.g. local dev environments without R2 credentials).
+     */
+    private function disk(): string
+    {
+        return empty(config('filesystems.disks.r2.bucket')) ? 'public' : 'r2';
+    }
+
+    /**
+     * Same root prefix used by the Spatie Media Library uploads (product photos),
+     * so every asset lands under one organized root in the bucket.
+     */
+    private function rootPrefix(): string
+    {
+        $prefix = trim((string) config('media-library.prefix', ''), '/');
+
+        return $prefix !== '' ? $prefix.'/' : '';
+    }
+
+    /**
+     * Compresses, resizes and uploads an image, returning its public URL.
      *
+     * @param  string  $folder    Relative folder, e.g. "{store_id}/perfil/logo".
      * @param  int  $maxWidth  Max width in pixels (aspect ratio preserved).
      * @param  int  $quality   WebP quality 0-100.
      */
@@ -20,21 +41,30 @@ class ImageUploadService
         $image = Image::read($file->getPathname());
         $image->scaleDown(width: $maxWidth);
 
-        $webp = (string) $image->toWebp($quality);
-
-        $path = $folder.'/'.Str::uuid().'.webp';
-        Storage::disk('r2')->put($path, $webp, 'public');
-
-        return $path;
+        return $this->uploadBinary((string) $image->toWebp($quality), $folder);
     }
 
     /**
-     * Deletes a file from R2 by its public URL.
-     * Does nothing if the URL doesn't belong to the R2 bucket.
+     * Sobe bytes de imagem já prontos (ex.: banner composto em memória) sem exigir um
+     * UploadedFile de request — mesmo disco/prefixo do upload() normal.
+     */
+    public function uploadBinary(string $binary, string $folder, string $extension = 'webp'): string
+    {
+        $path = $this->rootPrefix().trim($folder, '/').'/'.Str::uuid().'.'.$extension;
+        $disk = $this->disk();
+        Storage::disk($disk)->put($path, $binary, 'public');
+
+        return Storage::disk($disk)->url($path);
+    }
+
+    /**
+     * Deletes a previously uploaded file by its public URL.
+     * Does nothing if the URL doesn't belong to the configured disk.
      */
     public function delete(string $url): void
     {
-        $publicUrl = rtrim((string) config('filesystems.disks.r2.url', ''), '/');
+        $disk = $this->disk();
+        $publicUrl = rtrim((string) config("filesystems.disks.{$disk}.url", ''), '/');
 
         if ($publicUrl === '' || ! str_starts_with($url, $publicUrl)) {
             return;
@@ -43,7 +73,7 @@ class ImageUploadService
         $path = ltrim(substr($url, strlen($publicUrl)), '/');
 
         if ($path !== '') {
-            Storage::disk('r2')->delete($path);
+            Storage::disk($disk)->delete($path);
         }
     }
 }

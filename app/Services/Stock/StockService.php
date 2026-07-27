@@ -5,7 +5,9 @@ namespace App\Services\Stock;
 use App\Models\Category;
 use App\Models\Product;
 use App\Models\ProductVariation;
+use App\Models\Store;
 use App\Services\ImageUploadService;
+use App\Support\Tenancy\TenantContext;
 use Illuminate\Contracts\Pagination\LengthAwarePaginator;
 use Illuminate\Http\Request;
 use Illuminate\Http\UploadedFile;
@@ -17,7 +19,22 @@ class StockService
 {
     public function __construct(
         private readonly ImageUploadService $imageUploader,
+        private readonly TenantContext $tenant,
     ) {}
+
+    /**
+     * Folder used to organize category images: {store_id}/produtos/categorias.
+     * Categories belong to the company (not a single store), so we use the
+     * tenant's first store as the "loja" bucket folder.
+     */
+    private function categoryImageFolder(): string
+    {
+        $store = $this->tenant->hasCompany()
+            ? Store::query()->where('company_id', $this->tenant->companyId())->orderBy('id')->first()
+            : null;
+
+        return ($store?->mediaFolderName() ?? 'sem-loja').'/produtos/categorias';
+    }
 
     /**
      * Paginated product list with search and category filter.
@@ -37,7 +54,8 @@ class StockService
                 'selectionGroup.options:id,selection_group_id,label,description,price,position,is_active',
                 'variationGroup:id,name,required',
                 'variationGroup.options:id,variation_group_id,name,price,sort_order',
-                'variations:id,product_id,name,price,stock_quantity,is_default,is_active',
+                'variations:id,product_id,name,price,additional_price,stock_quantity,is_default,is_active',
+                'optionalFlows:id',
             ])
             ->when(
                 $request->filled('search'),
@@ -68,6 +86,9 @@ class StockService
             }
             if ($product->relationLoaded('category') && $product->category) {
                 $product->category->makeHidden('products');
+            }
+            if ($product->relationLoaded('optionalFlows')) {
+                $product->setAttribute('optional_flow_id', $product->optionalFlows->first()?->id);
             }
             return $product;
         });
@@ -165,6 +186,16 @@ class StockService
     }
 
     /**
+     * Substitui as atribuições diretas de fluxo de opcionais do produto (não mexe em
+     * atribuições herdadas da categoria) por, no máximo, uma — espelha o dropdown de seleção
+     * única "Lista de opcionais" do formulário, mesmo o modelo suportando N:N.
+     */
+    public function syncOptionalFlowAssignment(Product $product, ?int $optionalFlowId): void
+    {
+        $product->optionalFlows()->sync($optionalFlowId !== null ? [$optionalFlowId] : []);
+    }
+
+    /**
      * Delete a product and its associated media.
      */
     public function deleteProduct(Product $product, Request $request): void
@@ -209,7 +240,7 @@ class StockService
             $payload = $this->normalizeCategoryPayload($data);
 
             if ($image !== null) {
-                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+                $payload['image_url'] = $this->imageUploader->upload($image, $this->categoryImageFolder());
             }
 
             $category = Category::query()->create($payload);
@@ -230,7 +261,7 @@ class StockService
 
             if ($image !== null) {
                 $this->deleteCategoryImageIfLocal($category->image_url);
-                $payload['image_url'] = $this->imageUploader->upload($image, 'categories');
+                $payload['image_url'] = $this->imageUploader->upload($image, $this->categoryImageFolder());
             }
 
             $category->fill($payload)->save();
@@ -295,6 +326,10 @@ class StockService
     private function syncVariations(Product $product, array $variations): void
     {
         if ($variations === []) {
+            if ($product->has_variations) {
+                $product->forceFill(['has_variations' => false])->save();
+            }
+
             return;
         }
 
@@ -305,10 +340,14 @@ class StockService
                 'name',
                 'sku',
                 'price',
+                'additional_price',
                 'stock_quantity',
                 'attributes',
                 'is_default',
                 'is_active',
+                'store_pizza_size_id',
+                'price_mode',
+                'override_price',
             ]);
 
             $payload['stock_quantity'] = (int) ($payload['stock_quantity'] ?? 0);
@@ -332,5 +371,9 @@ class StockService
         }
 
         $product->variations()->whereNotIn('id', $existingIds)->delete();
+
+        if (! $product->has_variations) {
+            $product->forceFill(['has_variations' => true])->save();
+        }
     }
 }

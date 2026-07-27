@@ -97,6 +97,6 @@ class SellerStoreAccessService
 
     private function isActiveSeller(User $seller): bool
     {
-        return $seller->role === 'seller';
+        return $seller->role === 'seller' && $seller->is_active;
     }
 }

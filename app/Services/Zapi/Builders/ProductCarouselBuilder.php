@@ -8,30 +8,87 @@ use Illuminate\Support\Str;
 
 class ProductCarouselBuilder
 {
-    public function formatProductCardText(Product $product, Store $store): string
+    /**
+     * Card de produto no formato do documento (§5/§5.3):
+     *
+     *   🍔 Hambúrguer artesanal com bacon crocante e cheddar
+     *   _Acompanha: Pão brioche, carne artesanal, bacon crocante, cheddar_
+     *   R$ 29,90
+     *
+     * Em promoção, badge de desconto na primeira linha + preço riscado:
+     *
+     *   🔥 -20%
+     *   X-Tudo Especial
+     *   _Acompanha: ..._
+     *   De ~R$ 50,00~ por R$ 40,00
+     */
+    /**
+     * `$showStoreName` (spec §1.1.b): carrossel de busca por produto cruza várias lojas, então
+     * o nome da loja entra como linha de texto — o header do card só suporta 1 imagem, já
+     * ocupada pela foto do produto. No carrossel normal (dentro de uma loja só) fica `false`,
+     * já que o cliente já sabe em qual loja está.
+     */
+    public function formatProductCardText(Product $product, Store $store, bool $showStoreName = false): string
     {
-        $name = trim((string) $product->name);
-        $price = 'R$ '.number_format((float) $product->price, 2, ',', '.');
-        $description = $this->normalizeProductDescription((string) ($product->description ?? 'Produto saboroso.'));
+        $lines = [];
+        $promo = $this->promotionInfo($product);
 
-        return $name.' '.$this->productEmoji($product, $store)."\n\n"
-            .'🏷️ Por: '.$price."\n\n"
-            .'💬 "'.$description.'"';
+        if ($promo !== null) {
+            $lines[] = '🔥 -'.$promo['discount_pct'].'%';
+            $lines[] = trim((string) $product->name);
+        } else {
+            $lines[] = $this->productEmoji($product, $store).' '.trim((string) $product->name);
+        }
+
+        $description = trim((string) ($product->description ?? ''));
+        if ($description !== '') {
+            $lines[] = '_Acompanha: '.rtrim($description, '.').'_';
+        }
+
+        if ($showStoreName) {
+            $lines[] = '🏪 '.trim((string) $store->name);
+        }
+
+        $lines[] = $promo !== null
+            ? 'De ~'.$this->formatMoney($promo['price_from']).'~ por '.$this->formatMoney($promo['price_final'])
+            : $this->formatMoney((float) $product->price);
+
+        return implode("\n", $lines);
     }
 
-    public function normalizeProductDescription(string $description): string
+    /**
+     * Preço efetivo de venda (promocional quando ativo) — usado no label do botão
+     * "🛒 Adicionar por R$ X" (§5.1).
+     */
+    public function effectivePrice(Product $product): float
     {
-        $description = trim($description);
+        $promo = $this->promotionInfo($product);
 
-        if ($description === '') {
-            return 'Produto saboroso.';
+        return $promo !== null ? $promo['price_final'] : (float) $product->price;
+    }
+
+    /**
+     * @return array{price_from: float, price_final: float, discount_pct: int}|null
+     */
+    private function promotionInfo(Product $product): ?array
+    {
+        $price = (float) $product->price;
+        $promotionalPrice = $product->promotional_price !== null ? (float) $product->promotional_price : null;
+
+        if ($promotionalPrice === null || $promotionalPrice >= $price) {
+            return null;
         }
 
-        if (! str_ends_with($description, '.') && ! str_ends_with($description, '!') && ! str_ends_with($description, '?')) {
-            $description .= '.';
-        }
+        return [
+            'price_from' => $price,
+            'price_final' => $promotionalPrice,
+            'discount_pct' => (int) round((1 - ($promotionalPrice / $price)) * 100),
+        ];
+    }
 
-        return $description;
+    private function formatMoney(float $value): string
+    {
+        return 'R$ '.number_format($value, 2, ',', '.');
     }
 
     public function productEmoji(Product $product, Store $store): string
@@ -42,11 +99,16 @@ class ProductCarouselBuilder
             'cat_lanches' => '🍔',
             'cat_pastel' => '🥟',
             'cat_pizza' => '🍕',
-            'cat_acai' => '🍇',
+            'cat_acai' => '🍧',
             'cat_refeicao' => '🍽️',
             'cat_farmacia' => '💊',
             'cat_padaria' => '🥖',
             'cat_mercadinho' => '🛒',
+            'cat_japonesa' => '🍣',
+            'cat_cafeteria' => '☕',
+            'cat_gelateria' => '🍨',
+            'cat_saudavel' => '🥗',
+            'cat_mexicana' => '🌮',
             default => '🍽️',
         };
     }
@@ -57,5 +119,4 @@ class ProductCarouselBuilder
             .'Deslize para o lado, escolha o seu pedido e clique em Adicionar'
             ."\n";
     }
-
 }

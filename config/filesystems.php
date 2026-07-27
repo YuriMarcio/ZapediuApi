@@ -68,7 +68,7 @@ return [
             'bucket'                  => env('R2_BUCKET'),
             'url'                     => env('R2_PUBLIC_URL'),   // URL pública do bucket (domínio custom ou r2.dev)
             'endpoint'                => env('R2_ENDPOINT'),     // https://<account_id>.r2.cloudflarestorage.com
-            'use_path_style_endpoint' => false,
+            'use_path_style_endpoint' => true, // R2 exige path-style: endpoint/bucket/key (não virtual-hosted-style)
             'throw'                   => true,
         ],
 

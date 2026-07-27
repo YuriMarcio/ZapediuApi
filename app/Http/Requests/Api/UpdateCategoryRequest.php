@@ -4,6 +4,7 @@ namespace App\Http\Requests\Api;
 
 use App\Models\Category;
 use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
 
 class UpdateCategoryRequest extends StoreCategoryRequest
 {
@@ -32,10 +33,12 @@ class UpdateCategoryRequest extends StoreCategoryRequest
                 },
             ],
             'icon' => ['nullable', 'string', 'max:32'],
+            'description' => ['nullable', 'string', 'max:120'],
             'color' => ['nullable', 'string', 'regex:/^#[0-9A-Fa-f]{3,6}$/'],
             'sort_order' => ['nullable', 'integer', 'min:0'],
             'is_active' => ['sometimes', 'boolean'],
             'image' => ['nullable', 'file', 'image', 'mimes:jpg,jpeg,png,webp', 'max:4096'],
+            'category_type' => ['sometimes', Rule::in(['pizza', 'standard'])],
         ];
     }
 }

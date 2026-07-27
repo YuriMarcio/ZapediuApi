@@ -20,6 +20,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
 // Importa as novas classes organizadas
+use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
 use App\Services\Zapi\Support\PayloadExtractor;
 use App\Services\Zapi\Handlers\StoreHandle;
@@ -44,7 +45,7 @@ class ZapiWebhookService
      * Cada handler/serviço é responsável por uma parte do fluxo de atendimento.
      */
     public function __construct(
-        private readonly ZapiClient $zapiClient,
+        private readonly WhatsAppClientInterface $zapiClient,
         private readonly FlowManager $flow,
         private readonly PayloadExtractor $extractor,
         private readonly StoreHandle $storeHandle,

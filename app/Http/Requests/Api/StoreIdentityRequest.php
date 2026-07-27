@@ -21,9 +21,11 @@ class StoreIdentityRequest extends FormRequest
             'whatsapp_phone' => ['required', 'string', 'max:30'],
             'segment' => ['nullable', 'string', 'max:80'],
             'category_id' => ['nullable', 'integer', 'exists:categories,id'],
+            'max_flavors' => ['nullable', 'integer', 'min:1', 'max:4'],
             'description' => ['nullable', 'string', 'max:500'],
             'logo' => ['nullable', 'image', 'max:20480'],
             'cover' => ['nullable', 'image', 'max:20480'],
+            'menu_banner' => ['nullable', 'image', 'max:20480'],
         ];
     }
 }

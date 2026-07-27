@@ -9,11 +9,11 @@ use Illuminate\Support\Facades\Validator;
 use Illuminate\Support\Str;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
-use App\Services\Zapi\ZapiClient;
+use App\Services\Whatsapp\WhatsAppClientInterface;
 
 class CourierController extends Controller
 {
-    public function store(Request $request, ZapiClient $zapiClient)
+    public function store(Request $request, WhatsAppClientInterface $zapiClient)
     {
         $data = $request->all();
 

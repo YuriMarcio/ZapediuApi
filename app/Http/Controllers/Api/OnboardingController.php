@@ -4,10 +4,12 @@ namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\OnboardingStoreRequest;
+use App\Models\Operation;
 use App\Models\User;
 use App\Services\Onboarding\OnboardingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Validation\ValidationException;
 use Symfony\Component\HttpFoundation\Response;
 
 class OnboardingController extends Controller
@@ -28,16 +30,16 @@ class OnboardingController extends Controller
         if ($seller === null) {
             return response()->json([
                 'message' => 'Código do vendedor inválido.',
-                'errors'  => [
+                'errors' => [
                     'seller_code' => ['Código não encontrado.'],
                 ],
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
         return response()->json([
-            'valid'  => true,
+            'valid' => true,
             'seller' => [
-                'id'   => $seller->id,
+                'id' => $seller->id,
                 'name' => $seller->name,
                 'code' => $seller->seller_code,
             ],
@@ -49,6 +51,46 @@ class OnboardingController extends Controller
         $result = $this->service->create($request->validated());
 
         return response()->json($result, Response::HTTP_CREATED);
+    }
+
+    public function storeForManager(OnboardingStoreRequest $request): JsonResponse
+    {
+        $data = $request->validated();
+        $user = $request->user();
+
+        if (isset($data['operation_id'])) {
+            $operation = Operation::query()
+                ->when($user->role === 'manager', fn ($query) => $query->where('commercial_manager_id', $user->id))
+                ->find($data['operation_id']);
+
+            if ($operation === null) {
+                throw ValidationException::withMessages([
+                    'operation_id' => ['A operação selecionada não está disponível para este usuário.'],
+                ]);
+            }
+        }
+
+        if ($user->role === 'seller') {
+            if (! $user->seller_code) {
+                throw ValidationException::withMessages([
+                    'seller_code' => ['O vendedor não possui um código comercial configurado.'],
+                ]);
+            }
+
+            $data['seller_code'] = $user->seller_code;
+        } else {
+            unset($data['seller_code']);
+        }
+
+        return response()->json(
+            $this->service->create(
+                $data,
+                assignDefaultOwnerPassword: true,
+                includeAuth: false,
+                manager: $user->role === 'manager' ? $user : null,
+            ),
+            Response::HTTP_CREATED,
+        );
     }
 
     public function metadata(): JsonResponse

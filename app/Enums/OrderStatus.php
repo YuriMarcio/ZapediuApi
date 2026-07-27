@@ -10,4 +10,5 @@ enum OrderStatus: string
     case PreparToDelivery = 'preparToDelivery';
     case Delivering = 'delivering';
     case Done = 'done';
+    case Cancelled = 'cancelled';
 }

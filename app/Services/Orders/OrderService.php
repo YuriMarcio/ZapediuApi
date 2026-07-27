@@ -6,20 +6,23 @@ use App\Domain\Orders\OrderStateMachine;
 use App\Models\Order;
 use App\Models\Product;
 use App\Services\Whatsapp\WhatsAppOrchestrator;
-use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Http\Request;
 use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\DB;
 
 class OrderService
 {
     // Active status groups that map to the front-end sub-tabs.
-    public const STATUS_TAB_NEW  = 'pending';
+    public const STATUS_TAB_NEW = 'pending';
+
     public const STATUS_TAB_PREP = 'preparing';       // "Em Preparo" includes confirmed
+
     public const STATUS_TAB_ROAD = 'delivering'; // "Na Rota"
 
     /** Statuses considered "active" (visible in Ativos tab). */
-    public const ACTIVE_STATUSES = ['pending', 'accepted', 'preparing', 'delivering'];
+    public const ACTIVE_STATUSES = ['pending', 'accepted', 'preparing', 'preparToDelivery', 'delivering'];
 
     /** Statuses considered "history" (visible in Histórico tab). */
     public const HISTORY_STATUSES = ['done', 'cancelled'];
@@ -39,7 +42,7 @@ class OrderService
      *
      * Query params:
      *   tab      = active (default) | history
-    *   status   = pending|accepted|preparing|delivering|done|cancelled
+     *   status   = pending|accepted|preparing|delivering|done|cancelled
      *   search   = customer name/phone partial match
      *   per_page = default 20
      */
@@ -66,18 +69,18 @@ class OrderService
                 fn (Builder $q) => $q->where(function (Builder $inner) use ($request): void {
                     $term = '%'.$request->string('search')->toString().'%';
                     $inner->where('code', 'like', $term)
-                          ->orWhereHas('user', function (Builder $userQuery) use ($term): void {
-                              $userQuery->where('name', 'like', $term)
-                                  ->orWhere('phone', 'like', $term)
-                                  ->orWhere('email', 'like', $term);
-                            })->orWhereHas('user.phones', function (Builder $phoneQuery) use ($term): void {
-                                $phoneQuery->where('phone', 'like', $term);
-                          });
+                        ->orWhereHas('user', function (Builder $userQuery) use ($term): void {
+                            $userQuery->where('name', 'like', $term)
+                                ->orWhere('phone', 'like', $term)
+                                ->orWhere('email', 'like', $term);
+                        })->orWhereHas('user.phones', function (Builder $phoneQuery) use ($term): void {
+                            $phoneQuery->where('phone', 'like', $term);
+                        });
                 })
             )
             ->orderByDesc('ordered_at')
             ->orderByDesc('id')
-            ->paginate((int) $request->query('per_page', 20));
+            ->paginate(min(100, max(1, (int) $request->query('per_page', 20))));
 
         $collection = $orders->getCollection();
         $this->attachProducts($collection);
@@ -96,10 +99,10 @@ class OrderService
      * Summary counts shown in the sub-tab headers.
      *
      * Returns:
-    *   pending    – orders awaiting acceptance
-    *   accepted   – accepted but prep not started
-    *   preparing  – kitchen working on it
-    *   delivering – on the road
+     *   pending    – orders awaiting acceptance
+     *   accepted   – accepted but prep not started
+     *   preparing  – kitchen working on it
+     *   delivering – on the road
      */
     public function summary(): array
     {
@@ -122,9 +125,19 @@ class OrderService
             'pending' => (int) ($activeCounts['pending'] ?? 0),
             'accepted' => (int) ($activeCounts['accepted'] ?? 0),
             'preparing' => (int) ($activeCounts['preparing'] ?? 0),
-            'delivering' => (int) ($activeCounts['delivering'] ?? 0),
+            'delivering' => (int) ($activeCounts['preparToDelivery'] ?? 0) + (int) ($activeCounts['delivering'] ?? 0),
             'done' => (int) ($historyCounts['done'] ?? 0),
             'cancelled' => (int) ($historyCounts['cancelled'] ?? 0),
+            'today_count' => Order::query()
+                ->whereDate('ordered_at', today())
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->count(),
+            'today_revenue' => round((float) Order::query()
+                ->whereDate('ordered_at', today())
+                ->where('status', '!=', 'cancelled')
+                ->where('payment_status', 'paid')
+                ->sum('total'), 2),
         ];
     }
 
@@ -149,20 +162,28 @@ class OrderService
     // ── Mutations ────────────────────────────────────────────────────────────
 
     /**
-    * Accept a pending order → accepted, set countdown timer.
+     * Accept a pending order → accepted, set countdown timer.
      *
      * @param  int  $prepMinutes  How many minutes to give for preparation.
      */
     public function accept(Order $order, int $prepMinutes, Request $request): array
     {
-        abort_unless(
-            $this->stateMachine->transition($order, 'accepted'),
-            422,
-            'Este pedido não pode ser aceito no estado atual.'
-        );
+        DB::transaction(function () use ($order, $prepMinutes): void {
+            abort_unless(
+                $this->stateMachine->transition($order, 'accepted'),
+                422,
+                'Este pedido não pode ser aceito no estado atual.'
+            );
 
-        $order->estimated_ready_at = now()->addMinutes(max(1, $prepMinutes ?: self::DEFAULT_PREP_MINUTES));
-        $order->save();
+            abort_unless(
+                $this->stateMachine->transition($order, 'preparing'),
+                422,
+                'Não foi possível iniciar o preparo deste pedido.'
+            );
+
+            $order->estimated_ready_at = now()->addMinutes(max(1, $prepMinutes ?: self::DEFAULT_PREP_MINUTES));
+            $order->save();
+        });
 
         $this->queueStatusNotification($order);
 
@@ -173,7 +194,7 @@ class OrderService
     }
 
     /**
-    * Reject a pending order → cancelled.
+     * Reject a pending order → cancelled.
      */
     public function reject(Order $order, ?string $reason, Request $request): array
     {
@@ -186,7 +207,6 @@ class OrderService
         $order->rejection_reason = $reason;
         $order->save();
 
-
         $this->queueStatusNotification($order);
 
         $order = $order->refresh()->load(['user:id,name,email,phone', 'delivery:id,address,status', 'store:id,name']);
@@ -196,16 +216,15 @@ class OrderService
     }
 
     /**
-    * Advance order along the happy path:
-    *   accepted → preparing → delivering → done
+     * Advance order along the happy path:
+     *   accepted → preparing → delivering → done
      */
     public function advance(Order $order, Request $request): array
     {
-        $nextState = match ($order->status) {
-            'accepted' => 'preparing',
-            'preparing' => 'delivering',
+        $nextState = match ($order->statusValue()) {
+            'accepted', 'preparing', 'preparToDelivery' => 'delivering',
             'delivering' => 'done',
-            default            => null,
+            default => null,
         };
 
         abort_if($nextState === null, 422, 'Não há próximo estado para este pedido.');
@@ -245,7 +264,7 @@ class OrderService
                 ->filter()
                 ->values();
 
-            $order->setRelation('products', $orderedProducts);
+            $order->setResolvedProducts($orderedProducts);
         }
     }
 
@@ -259,7 +278,7 @@ class OrderService
         return [
             'id' => $order->id,
             'code' => $order->code,
-            'status' => $order->status,
+            'status' => $order->statusValue(),
             'created_at' => optional($order->created_at)?->toIso8601String(),
             'updated_at' => optional($order->updated_at)?->toIso8601String(),
             'customer' => Arr::only($customer, ['name', 'phone']),
@@ -286,7 +305,7 @@ class OrderService
         return [
             'id' => $order->id,
             'code' => $order->code,
-            'status' => $order->status,
+            'status' => $order->statusValue(),
             'created_at' => optional($order->created_at)?->toIso8601String(),
             'updated_at' => optional($order->updated_at)?->toIso8601String(),
             'customer' => $this->transformCustomer($order),
@@ -372,7 +391,7 @@ class OrderService
         }
 
         if (! is_array($cartItems) || $cartItems === []) {
-            return $order->products->values()->map(function (Product $product, int $index): array {
+            return $order->resolvedProducts()->values()->map(function (Product $product, int $index): array {
                 return [
                     'id' => $index + 1,
                     'product_id' => $product->id,
@@ -389,7 +408,7 @@ class OrderService
             })->all();
         }
 
-        $products = $order->products->keyBy('id');
+        $products = $order->resolvedProducts()->keyBy('id');
 
         return collect($cartItems)->values()->map(function (array $item, int $index) use ($products): array {
             $productId = (int) ($item['product_id'] ?? data_get($item, 'product.id', 0));
@@ -448,7 +467,7 @@ class OrderService
             'Pedido {order_code}: status {status}. Total R$ {total}.',
             [
                 'order_code' => $order->code,
-                'status' => $order->status,
+                'status' => $order->statusValue(),
                 'total' => number_format((float) $order->total, 2, ',', '.'),
             ]
         );

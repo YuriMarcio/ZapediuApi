@@ -13,10 +13,13 @@ class ProductVariation extends Model
     protected $fillable = [
         'company_id',
         'product_id',
+        'store_pizza_size_id',
         'name',
         'sku',
         'price',
         'additional_price',
+        'price_mode',
+        'override_price',
         'stock_quantity',
         'attributes',
         'is_default',
@@ -26,6 +29,7 @@ class ProductVariation extends Model
     protected $casts = [
         'price' => 'decimal:2',
         'additional_price' => 'decimal:2',
+        'override_price' => 'decimal:2',
         'stock_quantity' => 'integer',
         'attributes' => 'array',
         'is_default' => 'boolean',
@@ -39,5 +43,10 @@ class ProductVariation extends Model
     public function product(): BelongsTo
     {
         return $this->belongsTo(Product::class);
+    }
+
+    public function storePizzaSize(): BelongsTo
+    {
+        return $this->belongsTo(StorePizzaSize::class);
     }
 }

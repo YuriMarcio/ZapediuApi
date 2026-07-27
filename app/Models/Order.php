@@ -2,15 +2,18 @@
 
 namespace App\Models;
 
+use App\Enums\OrderStatus;
 use App\Models\Concerns\BelongsToCompany;
 use Illuminate\Database\Eloquent\Casts\Attribute;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
-use App\Enums\OrderStatus;
+use Illuminate\Support\Collection;
 
 class Order extends Model
 {
     use BelongsToCompany;
+
+    private ?Collection $resolvedProductsForPresentation = null;
 
     protected $fillable = [
         'company_id',
@@ -18,6 +21,7 @@ class Order extends Model
         'store_id',
         'product_ids',
         'courier_id',
+        'delivery_group_id',
         'code',
         'code_confirm',
         'status',
@@ -37,18 +41,20 @@ class Order extends Model
         'estimated_ready_at',
         'raw_payload',
         'group_message_id',
+        'reminder_sent_at',
     ];
 
     protected $casts = [
-        'product_ids'        => 'array',
-        'subtotal'           => 'decimal:2',
-        'delivery_fee'       => 'decimal:2',
-        'discount'           => 'decimal:2',
-        'total'              => 'decimal:2',
-        'ordered_at'         => 'datetime',
+        'product_ids' => 'array',
+        'subtotal' => 'decimal:2',
+        'delivery_fee' => 'decimal:2',
+        'discount' => 'decimal:2',
+        'total' => 'decimal:2',
+        'ordered_at' => 'datetime',
         'estimated_ready_at' => 'datetime',
-        'raw_payload'        => 'array',
-        'status'             => OrderStatus::class,
+        'raw_payload' => 'array',
+        'status' => OrderStatus::class,
+        'reminder_sent_at' => 'datetime',
     ];
 
     /**
@@ -59,6 +65,21 @@ class Order extends Model
         return $this->status === $status;
     }
 
+    public function statusValue(): string
+    {
+        return $this->status instanceof OrderStatus ? $this->status->value : (string) $this->status;
+    }
+
+    public function setResolvedProducts(Collection $products): void
+    {
+        $this->resolvedProductsForPresentation = $products;
+    }
+
+    public function resolvedProducts(): Collection
+    {
+        return $this->resolvedProductsForPresentation ?? collect();
+    }
+
     // ── Relationships ────────────────────────────────────────────────────────
 
     public function store(): BelongsTo
@@ -66,15 +87,24 @@ class Order extends Model
         return $this->belongsTo(Store::class);
     }
 
+    public function delivery(): BelongsTo
+    {
+        return $this->belongsTo(Delivery::class);
+    }
+
     public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
-
     public function courier(): BelongsTo
     {
         return $this->belongsTo(Courier::class);
+    }
+
+    public function deliveryGroup(): BelongsTo
+    {
+        return $this->belongsTo(DeliveryGroup::class);
     }
     // ── Accessors ────────────────────────────────────────────────────────────
 
@@ -109,7 +139,7 @@ class Order extends Model
         });
     }
 
-        public function getRouteKeyName()
+    public function getRouteKeyName()
     {
         return 'code';
     }

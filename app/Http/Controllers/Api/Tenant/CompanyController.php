@@ -14,15 +14,17 @@ class CompanyController extends Controller
 {
     public function me(TenantContext $tenant): JsonResponse
     {
-        $company = Company::query()->with(['plan', 'stores' => fn ($q) => $q->orderBy('id')->limit(1)])->findOrFail($tenant->companyId());
+        $company = Company::query()->with(['plan', 'wallet', 'stores' => fn ($q) => $q->orderBy('id')->limit(1)])->findOrFail($tenant->companyId());
 
         $data = $company->toArray();
-        unset($data['stores']);
+        unset($data['stores'], $data['wallet']);
 
         /** @var \App\Models\Store|null $store */
         $store = $company->stores->first();
         $data['logo_path'] = $store?->logo_path;
         $data['logo_url']  = $store?->logo_url;
+        $data['cover_image_url']  = $store?->cover_image_url;
+        $data['mercado_pago_connected'] = (bool) $company->wallet?->hasMpIntegration();
 
         if ($company->plan) {
             $data['plan'] = [
@@ -45,6 +47,10 @@ class CompanyController extends Controller
     {
         $data = $request->validate([
             'name' => ['sometimes', 'string', 'max:160'],
+            'trade_name' => ['sometimes', 'nullable', 'string', 'max:160'],
+            'legal_name' => ['sometimes', 'nullable', 'string', 'max:160'],
+            'whatsapp' => ['sometimes', 'nullable', 'string', 'max:30'],
+            'is_open' => ['sometimes', 'boolean'],
             'segment' => ['sometimes', 'string', 'max:80'],
             'shipping_rules' => ['sometimes', 'array'],
             'business_hours' => ['sometimes', 'array'],

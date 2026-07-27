@@ -120,6 +120,7 @@ class AuthController extends Controller
                 'email'      => $user->email,
                 'role'       => $user->role,
                 'company_id' => $user->company_id,
+                'operation_id' => $user->operation_id,
             ],
         ]);
     }
@@ -135,6 +136,7 @@ class AuthController extends Controller
                 'email'      => $user->email,
                 'role'       => $user->role,
                 'company_id' => $user->company_id,
+                'operation_id' => $user->operation_id,
             ],
         ]);
     }
