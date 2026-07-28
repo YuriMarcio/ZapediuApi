@@ -113,7 +113,7 @@ class ProductsHandler
 
         try {
             $introMessage = $category !== null
-                ? 'Produtos da categoria: '.$category->name
+                ? "🏪 *{$store->name}*\nProdutos da categoria: {$category->name}"
                 : $this->carouselBuilder->buildMenuIntroMessage($store);
 
             $response = $this->zapiClient->sendCarousel($phone, $introMessage, $cards);

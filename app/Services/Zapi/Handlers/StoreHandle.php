@@ -186,11 +186,12 @@ class StoreHandle
             ];
         }
 
-        // Título com o emoji do nicho da loja (§2.2: "🍕 Escolha uma categoria:").
+        // Título com o emoji do nicho da loja (§2.2: "🍕 Escolha uma categoria:"). Nome da loja
+        // vai na linha de cima pra deixar claro em qual cardápio o cliente está navegando.
         $emoji = $this->carouselBuilder->getCategoryEmoji($store->category?->slug);
 
         try {
-            $this->zapiClient->sendCarousel($phone, $emoji.' *Escolha uma categoria:*', $cards);
+            $this->zapiClient->sendCarousel($phone, "🏪 *{$store->name}*\n{$emoji} Escolha uma categoria:", $cards);
             return true;
         } catch (\Throwable $exception) {
             Log::warning('Failed to send category carousel.', ['error' => $exception->getMessage()]);

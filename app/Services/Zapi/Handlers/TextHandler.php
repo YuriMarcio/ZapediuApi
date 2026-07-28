@@ -96,6 +96,13 @@ class TextHandler
             );
         }
 
+        // Saudação (oi/bom dia/boa tarde/etc, com ou sem pontuação/texto extra) tem prioridade
+        // sobre o match exato abaixo — senão "Bom dia!" ou "Oi, tudo bem?" caíam direto na
+        // busca de produto/loja em vez de abrir o menu de boas-vindas.
+        if ($this->isGreeting($normalized)) {
+            return $this->greetingFlow->sendWelcomePrompt($phone);
+        }
+
         // Trata palavras-chave conhecidas usando match
         return match ($normalized) {
             // Se o usuário digitar "carrinho"
@@ -104,11 +111,24 @@ class TextHandler
             'finalizar', 'pagar', 'checkout' => $this->handleFinalize($phone),
             // Se digitar "lojas", "ver lojas" ou "mostrar lojas"
             'lojas', 'ver lojas', 'mostrar lojas' => $this->storeHandle->sendStoresPage($phone, 0),
-            // Se digitar "oi", "ola", "oie", "menu", "inicio" ou "start"
-            'oi', 'ola', 'oie', 'menu', 'inicio', 'start' => $this->greetingFlow->sendWelcomePrompt($phone),
             // Qualquer outro texto cai no tratamento genérico de busca
             default => $this->handleGenericSearch($phone, $messageText, $normalized)
         };
+    }
+
+    /**
+     * Casa saudação no INÍCIO da mensagem (\b no fim) — cobre tanto o texto exato ("oi") quanto
+     * variações com pontuação ou continuação ("Bom dia!", "Oi, tudo bem?", "Boa tarde, quero
+     * pedir uma pizza"). $normalized já veio em minúsculas e sem acento via FlowManager::normalize.
+     */
+    private function isGreeting(string $normalized): bool
+    {
+        return (bool) preg_match(
+            '/^(oi+|ola|oie|opa|eae|eai|e ai|salve|fala|coe|blz|'
+            .'bom\s?dia|boa\s?tarde|boa\s?noite|boa\s?madrugada|'
+            .'menu|inicio|comecar|start)\b/',
+            $normalized
+        );
     }
 
     private function handleViewCart(string $phone): bool
