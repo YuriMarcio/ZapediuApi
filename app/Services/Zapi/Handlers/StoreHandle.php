@@ -82,7 +82,7 @@ class StoreHandle
 
         if ($storeIds === []) {
             $storeIds = Store::query()
-                ->where('is_active', true)
+                ->visibleOnWhatsapp()
                 ->with('company:id,is_open')
                 ->orderBy('name')
                 ->get()
@@ -99,7 +99,7 @@ class StoreHandle
         }
 
         $stores = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->whereIn('slug', $pageStoreIds)
             ->with('category:id,slug,name')
             ->withPromotionFlag()
@@ -133,7 +133,7 @@ class StoreHandle
     {
         // 1. Busca a loja com contagem de categorias para decidir o fluxo
         $store = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->where('slug', $storeSlug)
             ->with('company:id,is_open')
             ->withCount(['categories' => function ($query) {

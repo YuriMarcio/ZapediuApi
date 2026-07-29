@@ -37,12 +37,25 @@ class ProductsHandler
     {
         $store = Store::query()
             ->with('category')
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->where('slug', $storeId)
             ->first();
 
         if ($store === null) {
-            return false;
+            try {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "Esta loja não está disponível no momento.\n\nEscolha outra loja para continuar seu pedido."
+                );
+            } catch (\Throwable $exception) {
+                Log::warning('Failed to send store unavailable notice.', [
+                    'phone' => $phone,
+                    'store_slug' => $storeId,
+                    'error' => $exception->getMessage(),
+                ]);
+            }
+
+            return true;
         }
 
         $category = null;

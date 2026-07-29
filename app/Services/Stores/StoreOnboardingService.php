@@ -37,10 +37,11 @@ class StoreOnboardingService
         $payload = $data;
         $payload['user_id'] = $request->user()->id;
         $payload['slug'] = $this->uniqueSlug((string) $data['name']);
-        // Loja só fica elegível para receber pedidos depois que o lojista conectar o
-        // Mercado Pago (ver MercadoPagoController::handleCallback). Fora de produção
-        // essa exigência é liberada para não travar o ambiente de dev.
-        $payload['is_active'] = ! app()->isProduction();
+        // Loja sempre nasce em onboarding/oculta (createstore.md, "Fluxo esperado") —
+        // só fica visível no WhatsApp depois de conectar o Mercado Pago (ou ser marcada
+        // is_test_store pelo master). Regra de negócio, não depende de ambiente. Ver
+        // Store::scopeVisibleOnWhatsapp().
+        $payload['is_active'] = false;
 
         // Cria a loja primeiro para ter o ID usado na organização das pastas de mídia.
         $store = Store::query()->create($payload);

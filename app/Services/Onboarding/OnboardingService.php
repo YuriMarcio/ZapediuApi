@@ -99,10 +99,11 @@ class OnboardingService
                 'city' => $data['address']['city'],
                 'state' => $data['address']['state'],
                 'business_hours' => $data['business_hours'],
-                // Loja só fica elegível para receber pedidos depois que o lojista conectar
-                // o Mercado Pago (ver MercadoPagoController::handleCallback). Fora de
-                // produção essa exigência é liberada para não travar o ambiente de dev.
-                'is_active' => ! app()->isProduction(),
+                // Loja sempre nasce em onboarding/oculta (createstore.md, "Fluxo
+                // esperado") — só fica visível no WhatsApp depois de conectar o Mercado
+                // Pago (ou ser marcada is_test_store pelo master). Regra de negócio, não
+                // depende de ambiente. Ver Store::scopeVisibleOnWhatsapp().
+                'is_active' => false,
             ]);
 
             if ($assignDefaultOwnerPassword) {

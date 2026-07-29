@@ -107,5 +107,9 @@ class StoreController extends Controller
         };
 
         abort_unless($hasAccess, 404, 'Loja não encontrada.');
+
+        if (in_array($user->role, ['seller', 'manager'], true) && ! $store->hasActiveManagerAccess()) {
+            abort(403, 'Seu período de acesso a esta loja foi encerrado. Solicite a liberação ao administrador.');
+        }
     }
 }

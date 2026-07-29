@@ -63,6 +63,8 @@ class Store extends Model implements HasMedia
         'city',
         'state',
         'is_active',
+        'is_test_store',
+        'seller_access_manually_enabled',
         'timezone',
         'settings',
         'latitude',
@@ -75,6 +77,8 @@ class Store extends Model implements HasMedia
 
     protected $casts = [
         'is_active' => 'boolean',
+        'is_test_store' => 'boolean',
+        'seller_access_manually_enabled' => 'boolean',
         'settings' => 'array',
         'business_hours' => 'array',
         'size_template' => 'array',
@@ -114,6 +118,64 @@ class Store extends Model implements HasMedia
      * aberta por padrão (não esconder lojas antigas que ainda não preencheram isso).
      * Requer `company` carregado (ex: `with('company:id,is_open')`) pra evitar N+1.
      */
+    /**
+     * Fonte única da regra "loja pode aparecer no WhatsApp" (createstore.md, "Regras
+     * finais"): loja operacional E (loja de teste OU Mercado Pago realmente conectado).
+     * Espelha Wallet::hasMpIntegration() em SQL — qualquer mudança lá precisa ser
+     * replicada aqui.
+     */
+    public function scopeVisibleOnWhatsapp(Builder $query): Builder
+    {
+        return $query
+            ->where('stores.is_active', true)
+            ->where(function (Builder $eligible): void {
+                $eligible
+                    ->where('stores.is_test_store', true)
+                    ->orWhereHas('company.wallet', function (Builder $wallet): void {
+                        $wallet
+                            ->whereNotNull('mp_access_token')
+                            ->where(function (Builder $expiry): void {
+                                $expiry->whereNull('mp_expires_at')->orWhere('mp_expires_at', '>', now());
+                            });
+                    });
+            });
+    }
+
+    /**
+     * Espelha scopeVisibleOnWhatsapp() para um model já carregado. Exige
+     * `company.wallet` carregado (`with('company.wallet')`), mesmo padrão de
+     * isOpenNow() com `company`.
+     */
+    public function isEligibleForWhatsapp(): bool
+    {
+        if (! $this->is_active) {
+            return false;
+        }
+
+        if ($this->is_test_store) {
+            return true;
+        }
+
+        return (bool) $this->company?->wallet?->hasMpIntegration();
+    }
+
+    /**
+     * Vendedor/gerente pode acessar/editar esta loja: dentro dos 15 dias corridos desde
+     * a criação (mesma janela de SellerStoreAccessService::accessWindowStart()) OU
+     * liberado manualmente pelo master. Não vale pra owner/master — quem decide isso é
+     * o chamador.
+     */
+    public function hasActiveManagerAccess(): bool
+    {
+        if ($this->seller_access_manually_enabled) {
+            return true;
+        }
+
+        $windowDays = max(1, (int) config('auth.seller_store_access_window_days', 15));
+
+        return $this->created_at !== null && $this->created_at->gt(now()->subDays($windowDays));
+    }
+
     public function isOpenNow(): bool
     {
         if ($this->relationLoaded('company') && $this->company !== null && $this->company->is_open === false) {

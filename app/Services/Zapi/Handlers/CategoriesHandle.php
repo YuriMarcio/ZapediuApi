@@ -62,7 +62,7 @@ class CategoriesHandle
 
         $limit = 9;
         $stores = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->where('category_id', $category->id)
             ->with(['company:id,is_open', 'category:id,slug,name'])
             ->withPromotionFlag()
@@ -249,7 +249,7 @@ class CategoriesHandle
     private function sendAllStoresFallback(string $phone, string $notice): bool
     {
         $stores = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->with(['company:id,is_open', 'category:id,slug,name'])
             ->withPromotionFlag()
             ->orderBy('name')

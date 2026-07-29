@@ -8,7 +8,6 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Http;
 use App\Models\Wallet;
-use App\Models\Store;
 // Import the V3 SDK classes
 use MercadoPago\MercadoPagoConfig;
 use MercadoPago\Client\Payment\PaymentClient;
@@ -296,38 +295,82 @@ public function handleCallback(Request $request)
         ]);
 
         if (!$code || !$companyId) {
-            return response()->json(['error' => 'Autorização inválida'], 400);
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Autorização inválida.'));
         }
-
-        // =========================================================================
-        // FORÇAR CREDENCIAIS DE SANDBOX DIRETAMENTE NO BANCO PARA TESTES
-        // =========================================================================
-        // Copie estes dados exatamente da sua tela de "Credenciais de teste"
-        
-        $public_key = 'TEST-dbf94075-e506-4542-9bfc-2e4f16dcee6f'; 
-        $access_token = 'TEST-1754582617723017-040823-7498a7a40dedd959cbc32a67640dbe39-561921860'; // Clique no "olho" no painel e cole aqui o Token Completo
 
         $wallet = Wallet::where('company_id', $companyId)->first();
 
-        if ($wallet) {
-            $wallet->update([
-                'mp_access_token'  => $access_token,
-                'mp_refresh_token' => 'mock_refresh_token_sandbox',
-                'mp_public_key'    => $public_key,
-                'mp_user_id'       => '385386043',
-                'mp_expires_at'    => now()->addYears(1), // Evita expirar durante os testes
-                'is_active'        => true
-            ]);
+        if (!$wallet) {
+            Log::warning('Callback MP: empresa sem carteira.', ['company_id' => $companyId]);
 
-            // Mercado Pago conectado: a(s) loja(s) da empresa ficam elegíveis e ativas
-            // para receber pedidos (fora de produção elas já nascem ativas, então isso
-            // é um no-op nesse caso).
-            Store::where('company_id', $companyId)->update(['is_active' => true]);
-
-            Log::info('Carteira forçada para modo Sandbox com sucesso!', ['company_id' => $companyId]);
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Carteira não encontrada para esta empresa.'));
         }
 
-        // Redireciona de volta para o seu painel do lojista
-        return redirect()->away("https://localhost:5173/painel/Carteira");
+        try {
+            $response = Http::asForm()
+                ->timeout(15)
+                ->post('https://api.mercadopago.com/oauth/token', [
+                    'client_id' => config('services.mercadopago.client_id'),
+                    'client_secret' => config('services.mercadopago.client_secret'),
+                    'grant_type' => 'authorization_code',
+                    'code' => $code,
+                    'redirect_uri' => config('services.mercadopago.redirect_uri'),
+                ]);
+        } catch (\Throwable $e) {
+            Log::error('Callback MP: falha de rede ao trocar o code.', [
+                'company_id' => $companyId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Falha de comunicação com o Mercado Pago.'));
+        }
+
+        if (! $response->successful()) {
+            Log::error('Callback MP: troca de code falhou.', [
+                'company_id' => $companyId,
+                'status' => $response->status(),
+                'body' => $response->json() ?? $response->body(),
+            ]);
+
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Não foi possível concluir a conexão com o Mercado Pago. Tente novamente.'));
+        }
+
+        $payload = $response->json();
+        $accessToken = (string) ($payload['access_token'] ?? '');
+
+        if ($accessToken === '') {
+            Log::error('Callback MP: resposta 2xx sem access_token.', ['company_id' => $companyId, 'body' => $payload]);
+
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Resposta inesperada do Mercado Pago.'));
+        }
+
+        $wallet->update([
+            'mp_access_token'  => $accessToken,
+            'mp_refresh_token' => $payload['refresh_token'] ?? null,
+            'mp_public_key'    => $payload['public_key'] ?? null,
+            'mp_user_id'       => isset($payload['user_id']) ? (string) $payload['user_id'] : null,
+            'mp_token_type'    => $payload['token_type'] ?? null,
+            'mp_expires_at'    => isset($payload['expires_in']) ? now()->addSeconds((int) $payload['expires_in']) : null,
+            // wallets.is_active gateia os endpoints de pagamento (createPix/createCardPayment
+            // acima) — é um campo DIFERENTE de stores.is_active (operação da loja). Conectar
+            // o MP com sucesso sempre habilita a carteira pra processar pagamento.
+            'is_active' => true,
+        ]);
+
+        Log::info('Callback MP: carteira conectada com sucesso.', ['company_id' => $companyId, 'mp_user_id' => $wallet->mp_user_id]);
+
+        // Store.is_active NÃO é tocado aqui de propósito. A elegibilidade no WhatsApp é
+        // calculada dinamicamente por Store::scopeVisibleOnWhatsapp() a partir da wallet —
+        // não existe mais um "flag" pra ligar na loja quando o MP conecta. Se a loja
+        // estiver desativada manualmente pelo master, conectar o MP não deve reativá-la.
+        return redirect()->away($this->mpPanelRedirectUrl(true));
+    }
+
+    private function mpPanelRedirectUrl(bool $success, ?string $message = null): string
+    {
+        $base = 'https://localhost:5173/painel/Carteira';
+        $params = $success ? ['mp' => 'success'] : ['mp' => 'error', 'message' => $message];
+
+        return $base.'?'.http_build_query($params);
     }
 }

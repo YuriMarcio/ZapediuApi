@@ -22,7 +22,7 @@ class StoreSearch
         $normalizedQuery = trim((string) Str::of($query)->lower()->ascii()->toString());
 
         $storesQuery = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->with(['category:id,name,slug', 'company:id,is_open']);
 
         if ($normalizedQuery !== '') {
@@ -111,8 +111,8 @@ class StoreSearch
 
         return Product::query()
             ->available()
-            ->with(['store' => fn ($storeQuery) => $storeQuery->with('category:id,name,slug')->where('is_active', true)])
-            ->whereHas('store', fn ($storeQuery) => $storeQuery->where('is_active', true))
+            ->with(['store' => fn ($storeQuery) => $storeQuery->with('category:id,name,slug')->visibleOnWhatsapp()])
+            ->whereHas('store', fn ($storeQuery) => $storeQuery->visibleOnWhatsapp())
             // Cada palavra precisa bater em ALGUM lugar (nome OU descrição) — TODAS as
             // palavras precisam bater (AND entre elas, mesmo padrão do byQuery pra loja).
             // Com OR entre palavras, "hambúrguer de bacon" batia em qualquer produto com
@@ -227,7 +227,7 @@ class StoreSearch
         }
 
         $storeIds = Store::query()
-            ->where('is_active', true)
+            ->visibleOnWhatsapp()
             ->where('category_id', $category->id)
             ->get()
             ->filter(fn (Store $store): bool => $store->isOpenNow())

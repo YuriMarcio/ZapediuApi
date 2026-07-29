@@ -32,7 +32,10 @@ class SellerStoreAccessService
     public function listAccessibleStoresForSeller(User $seller): Collection
     {
         return $this->baseSellerStoresQuery($seller)
-            ->where('stores.created_at', '>=', $this->accessWindowStart())
+            ->where(function ($query): void {
+                $query->where('stores.seller_access_manually_enabled', true)
+                    ->orWhere('stores.created_at', '>=', $this->accessWindowStart());
+            })
             ->orderByDesc('stores.created_at')
             ->orderByDesc('stores.id')
             ->get();
@@ -46,7 +49,7 @@ class SellerStoreAccessService
             throw new NotFoundHttpException('Loja nao encontrada para este vendedor.');
         }
 
-        if ($store->created_at === null || $store->created_at->lt($this->accessWindowStart())) {
+        if (! $store->hasActiveManagerAccess()) {
             throw new AccessDeniedHttpException('A janela de acesso desta loja expirou.');
         }
 

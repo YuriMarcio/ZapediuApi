@@ -699,7 +699,21 @@ class CheckoutFlow
             }
         }
 
-        $store = Store::query()->where('slug', $storeId)->first();
+        $store = Store::query()->visibleOnWhatsapp()->where('slug', $storeId)->first();
+
+        if ($store === null) {
+            try {
+                $this->zapiClient->sendText(
+                    $phone,
+                    "Esta loja não está disponível no momento.\n\nEscolha outra loja para continuar seu pedido."
+                );
+            } catch (\Throwable) {
+                // best-effort
+            }
+
+            return true;
+        }
+
         $coords = $this->customerCoords($state);
 
         if ($store instanceof Store && $coords !== null && ! $this->deliveryPricing->isWithinDeliveryArea($store, $coords['lat'], $coords['lng'])) {
