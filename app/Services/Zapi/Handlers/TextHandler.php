@@ -110,7 +110,7 @@ class TextHandler
             // Se digitar "finalizar", "pagar" ou "checkout"
             'finalizar', 'pagar', 'checkout' => $this->handleFinalize($phone),
             // Se digitar "lojas", "ver lojas" ou "mostrar lojas"
-            'lojas', 'ver lojas', 'mostrar lojas' => $this->storeHandle->sendStoresPage($phone, 0),
+            'lojas', 'ver lojas', 'mostrar lojas' => $this->showAllStores($phone),
             // Qualquer outro texto cai no tratamento genérico de busca
             default => $this->handleGenericSearch($phone, $messageText, $normalized)
         };
@@ -205,6 +205,22 @@ class TextHandler
         }
 
         return $this->handleStoreSearch($phone, $item);
+    }
+
+    /**
+     * Limpa qualquer filtro de busca (store_results/last_search) deixado por uma busca
+     * anterior antes de listar todas as lojas abertas — senão "ver lojas" reaproveita o
+     * resultado filtrado da última busca por texto.
+     */
+    private function showAllStores(string $phone): bool
+    {
+        $state = $this->flow->getState($phone);
+        $state['store_results'] = null;
+        $state['last_search'] = null;
+        $state['store_offset'] = 0;
+        $this->flow->saveState($phone, $state);
+
+        return $this->storeHandle->sendStoresPage($phone, 0);
     }
 
     /**

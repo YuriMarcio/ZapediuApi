@@ -38,6 +38,8 @@ class CategoriesHandle
         $state = $this->flow->getState($phone);
         $state['selected_store_id'] = null;
         $state['store_offset'] = 0;
+        $state['store_results'] = null;
+        $state['last_search'] = null;
         $this->saveFlowState($phone, $state);
 
         return $this->storeHandle->sendStoresPage($phone, 0);
