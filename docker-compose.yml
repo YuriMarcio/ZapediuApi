@@ -17,12 +17,14 @@ x-laravel-environment: &laravel-environment
   DB_USERNAME: "${DB_USERNAME}"
   DB_PASSWORD: "${DB_PASSWORD}"
 
-  REDIS_CLIENT: "${REDIS_CLIENT:-predis}"
+  # phpredis (extensão C, instalada no Dockerfile) em vez de predis: sessão, cache e fila
+  # vivem no Redis, então são caminhos de altíssima frequência.
+  REDIS_CLIENT: "${REDIS_CLIENT:-phpredis}"
   REDIS_HOST: redis
   REDIS_PASSWORD: null
   REDIS_PORT: 6379
 
-  SESSION_DRIVER: database
+  SESSION_DRIVER: redis
   SESSION_LIFETIME: 120
   SESSION_ENCRYPT: "false"
   SESSION_PATH: /
@@ -30,8 +32,11 @@ x-laravel-environment: &laravel-environment
 
   BROADCAST_CONNECTION: "${BROADCAST_CONNECTION:-reverb}"
   FILESYSTEM_DISK: local
-  QUEUE_CONNECTION: database
-  CACHE_STORE: database
+  # Fila no Redis: o driver `database` fazia o worker rodar SELECT ... FOR UPDATE na tabela
+  # `jobs` a cada 3s, criando contenção de lock no MySQL sob volume. O Redis usa BLPOP —
+  # o worker fica bloqueado esperando o job em vez de consultar em laço.
+  QUEUE_CONNECTION: redis
+  CACHE_STORE: redis
 
   # Como o PHP (app/worker) alcança o Reverb: nome do serviço na rede interna, sem TLS.
   # NÃO confundir com as VITE_* abaixo, que dizem como o NAVEGADOR alcança — trocar os dois
@@ -76,6 +81,7 @@ services:
       args:
         UID: "${UID:-1000}"
         GID: "${GID:-1000}"
+    mem_limit: 1200m
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     environment:
@@ -99,6 +105,7 @@ services:
       args:
         UID: "${UID:-1000}"
         GID: "${GID:-1000}"
+    mem_limit: 256m
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
@@ -119,6 +126,7 @@ services:
     build:
       context: .
       dockerfile: docker/nginx/Dockerfile
+    mem_limit: 64m
     restart: unless-stopped
     expose:
       - "80"
@@ -130,6 +138,7 @@ services:
 
   db:
     image: mysql:8.4
+    mem_limit: 1536m
     restart: unless-stopped
     environment:
       MYSQL_DATABASE: "${DB_DATABASE}"
@@ -151,11 +160,21 @@ services:
 
   redis:
     image: redis:7-alpine
+    mem_limit: 512m
     restart: unless-stopped
     command:
       - redis-server
       - --appendonly
       - "yes"
+      # Teto interno abaixo do mem_limit do container, para o Redis liberar espaço sozinho em
+      # vez de ser morto por OOM pelo Docker (o que levaria junto a fila de jobs).
+      - --maxmemory
+      - "400mb"
+      # `volatile-lru` e NÃO `allkeys-lru`: só descarta chaves COM expiração definida — cache e
+      # sessão. Os jobs da fila são gravados SEM TTL, então nunca entram na conta de despejo.
+      # Com `allkeys-lru`, encher a memória significaria descartar job de pedido pago.
+      - --maxmemory-policy
+      - volatile-lru
     volumes:
       - redis_data:/data
     healthcheck:
@@ -169,6 +188,40 @@ services:
     networks:
       - delivery-net
 
+  # Worker DEDICADO ao tempo real. Separado do worker geral de propósito: `broadcasts` só
+  # carrega POSTs rápidos na rede interna (~20ms), enquanto `default` tem jobs de WhatsApp que
+  # chegam a 15s (FLOWBRIDGE_TIMEOUT). Num worker compartilhado, bastava um job lento já em
+  # execução para o alerta de pedido novo esperar atrás dele — anulando o ganho do WebSocket.
+  # Prioridade por ordem na lista não resolve isso: ela só decide qual job pegar EM SEGUIDA.
+  worker-broadcasts:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    mem_limit: 160m
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: php artisan queue:work --queue=broadcasts --sleep=1 --tries=3 --timeout=30
+    environment:
+      <<: *laravel-environment
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - delivery-net
+
+  # Worker geral: pagamentos e notificações de WhatsApp. `payments` é a fila em que
+  # PaymentWebhookController enfileira o ProcessMercadoPagoWebhookJob (->onQueue('payments'))
+  # — sem nomeá-la aqui, nenhum PIX pago vira payment_status=paid.
+  #
+  # 3 réplicas porque estes jobs são I/O-bound (HTTP para FlowBridge e Mercado Pago): passam o
+  # tempo esperando resposta, não consumindo CPU. Com uma só, um job de 15s bloqueava toda a
+  # fila de notificações. Cada réplica custa ~35 MB (medido).
   worker:
     build:
       context: .
@@ -176,16 +229,38 @@ services:
       args:
         UID: "${UID:-1000}"
         GID: "${GID:-1000}"
+    mem_limit: 160m
     restart: unless-stopped
     user: "${UID:-1000}:${GID:-1000}"
-    # `payments` é a fila em que PaymentWebhookController enfileira o
-    # ProcessMercadoPagoWebhookJob (->onQueue('payments')) — sem nomeá-la aqui o worker
-    # consome apenas `default` e nenhum webhook de pagamento do Mercado Pago é processado
-    # (PIX pago pelo cliente nunca vira payment_status=paid).
-    # `broadcasts` PRIMEIRO: queue:work drena na ordem listada, e essa fila só carrega POSTs
-    # rápidos na rede interna. Sem a prioridade, um lote de notificações WhatsApp na `default`
-    # (FLOWBRIDGE_TIMEOUT=15) atrasaria o alerta de pedido novo em ~1min, anulando o WebSocket.
-    command: php artisan queue:work --queue=broadcasts,payments,default --sleep=3 --tries=3 --timeout=60
+    command: php artisan queue:work --queue=payments,default --sleep=3 --tries=3 --timeout=60
+    deploy:
+      replicas: 3
+    environment:
+      <<: *laravel-environment
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - delivery-net
+
+  # O bootstrap/app.php agenda `orders:cleanup-pending` (15min) e
+  # `orders:send-pending-payment-reminders` (5min), mas NENHUM processo executava o scheduler —
+  # os dois comandos nunca rodaram em produção. `schedule:work` é o daemon que dispara isso
+  # (equivalente ao cron, sem precisar de crontab no container).
+  scheduler:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    mem_limit: 160m
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: php artisan schedule:work
     environment:
       <<: *laravel-environment
       RUN_MIGRATIONS: "false"

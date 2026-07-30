@@ -16,11 +16,20 @@ RUN apt-get update && apt-get install -y \
     libxml2-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
     && docker-php-ext-install pdo_mysql bcmath intl zip gd exif pcntl sockets \
+    # phpredis (extensão em C) no lugar do predis (PHP puro): sessão, cache e fila passaram a
+    # viver no Redis, então são operações de altíssima frequência — nesse regime a extensão
+    # nativa é várias vezes mais rápida. O predis segue no composer como fallback local.
+    && pecl install redis \
+    && docker-php-ext-enable redis \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 RUN echo "upload_max_filesize=20M\npost_max_size=22M\nmemory_limit=256M" \
     > /usr/local/etc/php/conf.d/uploads.ini
+
+# Pool do php-fpm dimensionado para o servidor (4 vCPU / 8 GB). O default da imagem é
+# pm.max_children=5, teto que travava a API inteira com poucos checkouts simultâneos.
+COPY docker/php/zz-pool.conf /usr/local/etc/php-fpm.d/zz-pool.conf
 
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
