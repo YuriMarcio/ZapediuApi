@@ -7,6 +7,7 @@ use App\Models\Wallet;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Crypt;
 
 class WalletController extends Controller
 {
@@ -37,7 +38,27 @@ class WalletController extends Controller
             'plan_id' => $wallet->plan_id,
             'mp_client_id' => $this->mercadoPagoOAuthConfigured() ? config('services.mercadopago.client_id') : null,
             'mp_redirect_uri' => $this->mercadoPagoOAuthConfigured() ? config('services.mercadopago.redirect_uri') : null,
+            'mp_oauth_state' => $this->mercadoPagoOAuthConfigured() ? $this->issueOAuthState((int) $company->id) : null,
         ]);
+    }
+
+    /**
+     * `state` do OAuth do Mercado Pago, emitido pro lojista AUTENTICADO e devolvido
+     * intacto pelo MP no callback.
+     *
+     * Precisa ser assinado, não o company_id cru: o callback é uma rota pública que
+     * confia no `state` pra decidir QUAL carteira recebe o token. Com o id em texto,
+     * qualquer pessoa autorizaria a própria conta do Mercado Pago passando o id de
+     * outra empresa e sobrescreveria a carteira dela — todo o faturamento da loja
+     * passaria a cair na conta do atacante. Encriptado, o valor só pode ter sido
+     * emitido aqui, pra quem estava logado naquela empresa.
+     */
+    private function issueOAuthState(int $companyId): string
+    {
+        return Crypt::encryptString(json_encode([
+            'company_id' => $companyId,
+            'exp' => now()->addMinutes(30)->getTimestamp(),
+        ]));
     }
 
     /**

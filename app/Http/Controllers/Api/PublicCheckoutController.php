@@ -8,6 +8,7 @@ use App\Models\Order;
 use App\Services\Payments\CheckoutService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
 
 class PublicCheckoutController extends Controller
 {
@@ -87,7 +88,12 @@ class PublicCheckoutController extends Controller
                 'can_pay' => ! in_array($order->payment_status, ['paid', 'approved'], true),
                 'source' => data_get($order->raw_payload, 'checkout.source', 'web'),
                 'delivery_mode' => data_get($order->raw_payload, 'checkout.delivery_mode', 'store'),
-                'mp_public_key' => $wallet ? $wallet->mp_public_key : env('VITE_MP_PUBLIC_KEY'),
+                'mp_public_key' => $wallet ? $wallet->mp_public_key : config('services.mercadopago.public_key'),
+                // Loja de teste não cobra de verdade (createstore.md, "Loja de teste"): o
+                // checkout troca PIX/cartão por uma confirmação simulada, para dar para testar
+                // todo o pós-compra — notificação ao cliente, entrada no painel do lojista e
+                // fluxo de entrega — sem movimentar dinheiro.
+                'simulated' => (bool) $order->store?->is_test_store,
             ],
             'payment_methods' => ['pix', 'card'],
         ], 200, ['Content-Type' => 'application/json']);
@@ -109,6 +115,62 @@ class PublicCheckoutController extends Controller
         $payload = $checkout->createForOrder($order, $request->validated(), $request);
 
         return response()->json($payload, 201, ['Content-Type' => 'application/json']);
+    }
+
+    /**
+     * Confirma o pagamento SEM cobrar — exclusivo de loja de teste. Existe para validar o
+     * pós-compra ponta a ponta durante o MVP: a notificação ao cliente, a entrada do pedido no
+     * painel do lojista e todo o fluxo de entrega dependem de `payment_status = paid`, que sem
+     * isso só o Mercado Pago produz.
+     *
+     * A trava é dupla e proposital: exige o token público do pedido (mesma regra do checkout
+     * real) E que a loja esteja marcada como teste. Em loja real a rota responde 403 mesmo com
+     * token válido, para que nenhum pedido de verdade possa ser marcado como pago sem dinheiro.
+     */
+    public function simulatePayment(Order $order, Request $request): JsonResponse
+    {
+        if ($response = $this->ensureAuthorized($order, $request)) {
+            return $response;
+        }
+
+        $order->loadMissing('store');
+
+        if (! $order->store?->is_test_store) {
+            return response()->json([
+                'message' => 'Simulação de pagamento disponível apenas em loja de teste.',
+                'order_code' => $order->code,
+            ], 403);
+        }
+
+        if (in_array($order->payment_status, ['paid', 'approved'], true)) {
+            return response()->json([
+                'message' => 'Este pedido já possui pagamento confirmado.',
+                'order_code' => $order->code,
+            ], 409);
+        }
+
+        // Mesmos campos que o webhook do Mercado Pago grava, para o pedido seguir por
+        // exatamente o mesmo caminho daqui em diante (OrderObserver dispara o evento em tempo
+        // real e a notificação de WhatsApp).
+        $order->update([
+            'payment_status' => 'paid',
+            'payment_method' => 'simulado',
+            'mp_payment_type' => 'simulated',
+            'mp_payment_status' => 'approved',
+            'mp_payment_approved_at' => now(),
+        ]);
+
+        Log::info('Pagamento SIMULADO confirmado (loja de teste).', [
+            'order_code' => $order->code,
+            'store_id' => $order->store_id,
+        ]);
+
+        return response()->json([
+            'status' => 'approved',
+            'simulated' => true,
+            'message' => 'Pagamento simulado com sucesso.',
+            'order_code' => $order->code,
+        ]);
     }
 
     /**

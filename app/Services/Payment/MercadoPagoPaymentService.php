@@ -269,38 +269,65 @@ class MercadoPagoPaymentService
         // Buscar detalhes do pagamento
         $wallet = null;
         $paymentDetails = null;
-        
-        // Primeiro, tentar encontrar a wallet para obter o access_token
-        // Para isso, precisamos buscar o pagamento com o token global inicial
-        try {
-            // Usar token global para buscar detalhes iniciais
-            $globalToken = config('services.mercadopago.access_token');
-            
-            if ($globalToken) {
-                MercadoPagoConfig::setAccessToken($globalToken);
-                $client = new PaymentClient();
-                $initialPayment = $client->get($paymentId);
-                
-                // Converter para array para processamento
-                $paymentDetails = [
-                    'id' => $initialPayment->id,
-                    'status' => $initialPayment->status,
-                    'payer' => [
-                        'id' => $initialPayment->payer->id ?? null,
-                    ],
-                    'external_reference' => $initialPayment->external_reference ?? null,
-                    'metadata' => $initialPayment->metadata ?? [],
-                    'description' => $initialPayment->description ?? null,
-                ];
-                
-                // Encontrar wallet correta
-                $wallet = $this->findWalletForPayment($paymentDetails);
+
+        // Caminho primário: o Mercado Pago manda `user_id` (o COLLECTOR, ou seja, a conta do
+        // lojista) no corpo da notificação. Resolver a wallet por ele dispensa o token da
+        // plataforma por completo.
+        //
+        // Isso não é otimização: no fluxo de marketplace o pagamento pertence à conta do
+        // lojista, então o token da plataforma só consegue lê-lo se estiver no MESMO ambiente.
+        // Com uma credencial TEST em produção o GET abaixo estoura 404, `$paymentDetails`
+        // fica null, o fallback por pedido (que exige `$paymentDetails`) é pulado e o webhook
+        // morre em "No active wallet found" — o pedido é pago e nunca cai no painel.
+        $collectorId = data_get($webhookData, 'user_id') ?? data_get($webhookData, 'data.user_id');
+
+        if ($collectorId) {
+            $wallet = Wallet::where('mp_user_id', (string) $collectorId)
+                ->where('is_active', true)
+                ->first();
+
+            if ($wallet) {
+                Log::info('MercadoPago Webhook: wallet resolvida pelo collector do webhook.', [
+                    'payment_id' => $paymentId,
+                    'mp_user_id' => (string) $collectorId,
+                    'wallet_id' => $wallet->id,
+                ]);
             }
-        } catch (\Exception $e) {
-            Log::error('MercadoPago Webhook: Failed to get initial payment details', [
-                'payment_id' => $paymentId,
-                'error' => $e->getMessage()
-            ]);
+        }
+
+        // Fallback: token da plataforma. Continua útil quando a notificação não traz
+        // `user_id` ou quando a wallet ainda não gravou `mp_user_id`.
+        if (! $wallet) {
+            try {
+                // Usar token global para buscar detalhes iniciais
+                $globalToken = config('services.mercadopago.access_token');
+
+                if ($globalToken) {
+                    MercadoPagoConfig::setAccessToken($globalToken);
+                    $client = new PaymentClient();
+                    $initialPayment = $client->get($paymentId);
+
+                    // Converter para array para processamento
+                    $paymentDetails = [
+                        'id' => $initialPayment->id,
+                        'status' => $initialPayment->status,
+                        'payer' => [
+                            'id' => $initialPayment->payer->id ?? null,
+                        ],
+                        'external_reference' => $initialPayment->external_reference ?? null,
+                        'metadata' => $initialPayment->metadata ?? [],
+                        'description' => $initialPayment->description ?? null,
+                    ];
+
+                    // Encontrar wallet correta
+                    $wallet = $this->findWalletForPayment($paymentDetails);
+                }
+            } catch (\Exception $e) {
+                Log::error('MercadoPago Webhook: Failed to get initial payment details', [
+                    'payment_id' => $paymentId,
+                    'error' => $e->getMessage()
+                ]);
+            }
         }
 
         // Se não encontrou wallet, tentar buscar pelo pedido diretamente

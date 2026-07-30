@@ -63,6 +63,11 @@ Route::prefix('public')->as('public.')->group(function (): void {
     Route::get('/orders/{order:code}/checkout', [PublicCheckoutController::class, 'show'])->name('orders.checkout.show');
 
     Route::post('/orders/{order:code}/checkout', [PublicCheckoutController::class, 'store'])->name('orders.checkout.store');
+
+    // Confirmação de pagamento SEM cobrança — só responde em loja marcada como teste
+    // (validado dentro do controller). Usado no MVP para testar o pós-compra.
+    Route::post('/orders/{order:code}/simulate-payment', [PublicCheckoutController::class, 'simulatePayment'])
+        ->name('orders.checkout.simulate');
 });
 Route::prefix('admin')->as('admin.')->group(function (): void {
     Route::get('/endpoints', [AdminEndpointsController::class, 'index'])

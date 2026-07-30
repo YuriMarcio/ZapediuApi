@@ -55,6 +55,13 @@ return [
         'redirect_uri' => env('MP_REDIRECT_URI'),
         'webhook_secret' => env('MP_WEBHOOK_SECRET'),
         'access_token' => env('MERCADO_PAGO_ACCESS_TOKEN'),
+        // URL que o MP chama ao mudar o status do pagamento. Fica aqui, e não em env()
+        // direto no controller, porque `php artisan config:cache` faz env() devolver null
+        // fora dos arquivos de config — e um notification_url nulo derruba a confirmação
+        // de TODO pagamento sem erro visível.
+        'webhook_url' => env('MERCADO_PAGO_WEBHOOK_URL'),
+        // Fallback do checkout quando a wallet da loja ainda não tem public key própria.
+        'public_key' => env('VITE_MP_PUBLIC_KEY'),
     ],
 
     'zapediu' => [

@@ -56,6 +56,19 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Frontend URL
+    |--------------------------------------------------------------------------
+    |
+    | Base do painel (SPA). O backend redireciona pra cá em fluxos que saem da
+    | API e voltam pro navegador — hoje o retorno do OAuth do Mercado Pago.
+    | Sem isso o retorno cai em localhost e o lojista vê página morta.
+    |
+    */
+
+    'frontend_url' => env('FRONTEND_URL', 'https://localhost:5173'),
+
+    /*
+    |--------------------------------------------------------------------------
     | Application Timezone
     |--------------------------------------------------------------------------
     |

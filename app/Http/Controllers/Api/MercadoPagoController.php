@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use App\Http\Controllers\Controller;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Config;
+use Illuminate\Support\Facades\Crypt;
 use Illuminate\Support\Facades\Http;
 use App\Models\Wallet;
 use App\Services\Payment\PlatformFeeCalculator;
@@ -127,7 +128,7 @@ class MercadoPagoController extends Controller
                 "description" => $description,
                 "payment_method_id" => "pix",
                 "external_reference" => $order->code, // Para o seu Job achar o pedido
-                "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
+                "notification_url"   => config('services.mercadopago.webhook_url'),
                 "application_fee"    => $applicationFee,
                 "payer" => [
                     "email" => $email,
@@ -237,7 +238,7 @@ class MercadoPagoController extends Controller
             "transaction_amount" => $amount,
             "description"        => $description,
             "external_reference" => $order->code,
-            "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
+            "notification_url"   => config('services.mercadopago.webhook_url'),
             "application_fee"    => $applicationFee,
             "installments"       => $data['installments'],
             "payment_method_id"  => $data['payment_method_id'],
@@ -251,7 +252,7 @@ class MercadoPagoController extends Controller
                 "token"              => $data['card_token'],
                 "description"        => $description,
                 "external_reference" => $order->code,
-                "notification_url"   => env('MERCADO_PAGO_WEBHOOK_URL'),
+                "notification_url"   => config('services.mercadopago.webhook_url'),
                 "application_fee"    => $applicationFee,
                 "installments"       => $data['installments'],
                 "payment_method_id"  => $data['payment_method_id'],
@@ -358,15 +359,17 @@ class MercadoPagoController extends Controller
 public function handleCallback(Request $request)
     {
         $code = $request->query('code');
-        $companyId = $request->query('state');
 
-        Log::info('Callback Mercado Pago recebido', [
-            'code' => $code,
-            'state' => $companyId,
-        ]);
+        Log::info('Callback Mercado Pago recebido');
 
-        if (!$code || !$companyId) {
+        if (! $code) {
             return redirect()->away($this->mpPanelRedirectUrl(false, 'Autorização inválida.'));
+        }
+
+        $companyId = $this->companyIdFromState((string) $request->query('state', ''));
+
+        if (! $companyId) {
+            return redirect()->away($this->mpPanelRedirectUrl(false, 'Autorização expirada ou inválida. Tente conectar novamente.'));
         }
 
         $wallet = Wallet::where('company_id', $companyId)->first();
@@ -437,9 +440,50 @@ public function handleCallback(Request $request)
         return redirect()->away($this->mpPanelRedirectUrl(true));
     }
 
+    /**
+     * Abre o `state` assinado emitido em WalletController::issueOAuthState().
+     *
+     * Rota pública: o `state` é a ÚNICA coisa que diz qual carteira recebe o token do
+     * Mercado Pago. Aceitar um id em texto aqui deixaria qualquer um apontar a própria
+     * conta do MP pra empresa de outro lojista e desviar o faturamento dela — por isso
+     * um state que não decripta é recusado, nunca interpretado como id.
+     */
+    private function companyIdFromState(string $state): ?int
+    {
+        if ($state === '') {
+            return null;
+        }
+
+        try {
+            $payload = json_decode(Crypt::decryptString($state), true, 512, JSON_THROW_ON_ERROR);
+        } catch (\Throwable $e) {
+            Log::warning('Callback MP: state inválido (não emitido por nós).', ['error' => $e->getMessage()]);
+
+            return null;
+        }
+
+        $companyId = (int) ($payload['company_id'] ?? 0);
+        $expiresAt = (int) ($payload['exp'] ?? 0);
+
+        if ($companyId <= 0) {
+            return null;
+        }
+
+        if ($expiresAt > 0 && $expiresAt < now()->getTimestamp()) {
+            Log::warning('Callback MP: state expirado.', ['company_id' => $companyId]);
+
+            return null;
+        }
+
+        return $companyId;
+    }
+
     private function mpPanelRedirectUrl(bool $success, ?string $message = null): string
     {
-        $base = 'https://localhost:5173/painel/Carteira';
+        // Vem de FRONTEND_URL: o callback do MP é a única rota que devolve o lojista pro
+        // painel, e com host fixo o retorno da conexão caía em localhost em produção —
+        // o lojista autorizava no Mercado Pago e batia em página morta.
+        $base = rtrim((string) config('app.frontend_url'), '/').'/painel/Carteira';
         $params = $success ? ['mp' => 'success'] : ['mp' => 'error', 'message' => $message];
 
         return $base.'?'.http_build_query($params);
