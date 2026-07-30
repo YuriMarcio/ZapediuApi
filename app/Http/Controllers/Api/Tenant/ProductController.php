@@ -5,10 +5,14 @@ namespace App\Http\Controllers\Api\Tenant;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\Api\StoreProductRequest;
 use App\Http\Requests\Api\UpdateProductRequest;
+use App\Models\Company;
 use App\Models\Product;
+use App\Models\Store;
 use App\Services\Stock\StockService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Validator;
 
 class ProductController extends Controller
 {
@@ -44,6 +48,67 @@ class ProductController extends Controller
         }
 
         return response()->json($product, 201);
+    }
+
+    /**
+     * POST /tenant/stores/{store}/products/import-json
+     *
+     * Recebe diretamente uma lista JSON no formato
+     * [{"codigo":"8.610","produto":"DIPIRONA 1G 10CPDS"}].
+     * O código é preservado como SKU. Como a planilha de origem não informa
+     * preço, itens novos entram inativos com preço R$ 0,00 até serem revisados.
+     */
+    public function importJson(Request $request, Store $store): JsonResponse
+    {
+        $this->ensureStoreAccess($request, $store);
+
+        $payload = $request->all();
+        $items = array_is_list($payload) ? $payload : ($payload['products'] ?? null);
+        $validated = Validator::make(['products' => $items], [
+            'products' => ['required', 'array', 'min:1', 'max:1000'],
+            'products.*.codigo' => ['required', 'string', 'max:80'],
+            'products.*.produto' => ['required', 'string', 'max:100'],
+        ])->validate();
+
+        $summary = DB::transaction(function () use ($validated, $store): array {
+            $created = 0;
+            $updated = 0;
+
+            foreach ($validated['products'] as $item) {
+                $sku = trim($item['codigo']);
+                $name = trim($item['produto']);
+                $product = Product::withoutGlobalScopes()
+                    ->where('store_id', $store->id)
+                    ->where('name', $name)
+                    ->first();
+
+                if ($product !== null) {
+                    $product->update(['sku' => $sku]);
+                    $updated++;
+                    continue;
+                }
+
+                Product::withoutGlobalScopes()->create([
+                    'company_id' => $store->company_id,
+                    'store_id' => $store->id,
+                    'name' => $name,
+                    'sku' => $sku,
+                    'description' => null,
+                    'price' => 0,
+                    'stock_quantity' => 0,
+                    'track_stock' => false,
+                    'is_active' => false,
+                ]);
+                $created++;
+            }
+
+            return ['created' => $created, 'updated' => $updated];
+        });
+
+        return response()->json([
+            'message' => "Importação concluída: {$summary['created']} produto(s) criado(s) e {$summary['updated']} atualizado(s). Itens novos ficam inativos até receberem preço.",
+            ...$summary,
+        ]);
     }
 
     /**
@@ -126,5 +191,27 @@ class ProductController extends Controller
         return response()->json([
             'data' => $product->optionalFlowStepOptions()->get(['optional_flow_step_options.id']),
         ]);
+    }
+
+    private function ensureStoreAccess(Request $request, Store $store): void
+    {
+        $user = $request->user();
+
+        if ($user->role === 'master') {
+            return;
+        }
+
+        $company = Company::query()->find($store->company_id);
+        $hasAccess = $company !== null && match ($user->role) {
+            'owner' => $company->id === $user->company_id,
+            'seller' => $company->seller_id === $user->id,
+            'manager' => $company->manager_id === $user->id,
+            default => false,
+        };
+
+        abort_unless($hasAccess, 404, 'Loja não encontrada.');
+        if (in_array($user->role, ['seller', 'manager'], true)) {
+            abort_unless($store->hasActiveManagerAccess(), 403, 'Seu período de acesso a esta loja foi encerrado.');
+        }
     }
 }

@@ -9,6 +9,7 @@ use App\Http\Requests\Api\StoreIdentityRequest;
 use App\Models\Store;
 use App\Models\Company;
 use App\Services\Stores\StoreOnboardingService;
+use App\Support\Stores\StorePresenter;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Log;
@@ -21,13 +22,9 @@ class StoreController extends Controller
 
     public function index(Request $request): JsonResponse
     {
-        $stores = $this->stores->listForUser($request);
-        $result = $stores->map(function ($store) {
-            $data = $store->toArray();
-            $data['store_id'] = $store->id;
-            $data['size_template'] = $store->sizeTemplate();
-            return $data;
-        });
+        $stores = StorePresenter::loadRelations($this->stores->listForUser($request));
+        $result = $stores->map(fn (Store $store) => StorePresenter::toArray($store));
+
         return response()->json(['data' => $result->values()]);
     }
 
@@ -41,10 +38,9 @@ class StoreController extends Controller
     public function show(Store $store): JsonResponse
     {
         $this->ensureStoreAccess(request(), $store);
-        $data = $store->load('owner:id,name,email')->toArray();
-        $data['size_template'] = $store->sizeTemplate();
+        StorePresenter::loadRelations($store);
 
-        return response()->json($data);
+        return response()->json(StorePresenter::toArray($store));
     }
 
     public function updateIdentity(Request $request, Store $store): JsonResponse

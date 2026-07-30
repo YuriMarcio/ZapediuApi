@@ -24,7 +24,7 @@ class PublicCheckoutController extends Controller
             return $response;
         }
 
-        $order->loadMissing(['store', 'user']);
+        $order->loadMissing(['store', 'user', 'company.operation.whatsappSession']);
 
         $user = $order->user;
 
@@ -58,19 +58,24 @@ class PublicCheckoutController extends Controller
                         'name' => data_get($item, 'product_name'),
                         'quantity' => data_get($item, 'quantity'),
                         'price' => (float) data_get($item, 'base_price'),
+                        'unit_price' => (float) data_get($item, 'base_price'),
 
                         // AQUI: Pegamos a imagem do banco, ou retornamos null se der ruim
                         'image' => $product ? $product->image_path : null,
 
-                        'options' => data_get($item, 'variation_name'),
+                        'variation' => data_get($item, 'variation_name') ? ['name' => data_get($item, 'variation_name')] : null,
                     ];
                 })->values()->all()
             ],
             'store' => [
-                                                'logo' => $order->store?->logo_url,
-                                                'name' => $order->store?->name,
-                                                'slug' => $order->store?->slug,
-                                            ],
+                'logo' => $order->store?->logo_url,
+                'name' => $order->store?->name,
+                'slug' => $order->store?->slug,
+                // Número que atendeu o cliente, pro checkout oferecer "voltar para a
+                // conversa". Prioriza a instância da operação (é o número com quem o
+                // cliente realmente falou) e cai pro telefone da empresa/loja.
+                'whatsapp_phone' => $this->conversationPhone($order),
+            ],
             'customer' => [
                 'name' => data_get($order->raw_payload, 'customer.name', $order->user?->name),
                 'email' => data_get($order->raw_payload, 'customer.email', $order->user?->email),
@@ -104,6 +109,29 @@ class PublicCheckoutController extends Controller
         $payload = $checkout->createForOrder($order, $request->validated(), $request);
 
         return response()->json($payload, 201, ['Content-Type' => 'application/json']);
+    }
+
+    /**
+     * Número do ZAPEDIU (a instância que atende o cliente no WhatsApp), pro checkout
+     * oferecer "voltar para a conversa" — deliberadamente NÃO cai pro telefone da loja:
+     * o cliente conversa com o bot, não com o lojista, e mandá-lo pro número da loja
+     * quebraria o atendimento.
+     *
+     * Só dígitos com DDI 55 quando salvo apenas com DDD, formato que o wa.me exige.
+     * Devolve null quando não há número, pra esconder o botão em vez de abrir link morto.
+     */
+    private function conversationPhone(Order $order): ?string
+    {
+        $raw = $order->company?->operation?->whatsappSession?->phone_number
+            ?: config('services.zapediu.whatsapp_phone');
+
+        $digits = preg_replace('/\D/', '', (string) $raw);
+
+        if ($digits === '' || strlen($digits) < 10) {
+            return null;
+        }
+
+        return strlen($digits) <= 11 ? '55'.$digits : $digits;
     }
 
     private function serializeItems(Order $order): array

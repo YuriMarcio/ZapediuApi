@@ -5,11 +5,14 @@ use App\Http\Controllers\Api\AdminEndpointsController;
 use App\Http\Controllers\Api\CommercialDashboardController;
 use App\Http\Controllers\Api\DeliveryManagementController;
 use App\Http\Controllers\Api\MasterOperationController;
+use App\Http\Controllers\Api\MasterOrderController;
 use App\Http\Controllers\Api\MercadoPagoController;
 use App\Http\Controllers\Api\OnboardingController;
 use App\Http\Controllers\Api\PlanController;
 use App\Http\Controllers\Api\PublicCheckoutController;
 use App\Http\Controllers\Api\SellerController;
+use App\Http\Controllers\Api\StoreAdminController;
+use App\Http\Controllers\Api\AuditLogController;
 use App\Http\Controllers\Api\Tenant\AccountController;
 use App\Http\Controllers\Api\Tenant\AuthController as TenantAuthController;
 use App\Http\Controllers\Api\Tenant\CategoryController;
@@ -104,6 +107,9 @@ Route::middleware(['auth:api', 'tenant'])->prefix('tenant')->as('api.tenant.')->
 
     // Estoque – Produtos
     Route::apiResource('products', ProductController::class);
+    Route::post('/stores/{store}/products/import-json', [ProductController::class, 'importJson'])
+        ->middleware('role:owner,manager,seller,master')
+        ->name('stores.products.import-json');
     Route::put('/products/{product}/pizza-addons', [ProductController::class, 'updatePizzaAddons'])->name('products.pizza-addons');
 
     // Lojas
@@ -206,4 +212,12 @@ Route::middleware(['auth:api', 'role:master'])->prefix('master')->as('api.master
     Route::get('/operations/{operation}/session/qrcode', [MasterOperationController::class, 'sessionQr']);
     Route::get('/operations/{operation}/session/status', [MasterOperationController::class, 'sessionStatus']);
     Route::post('/managers', [MasterOperationController::class, 'createManager']);
+
+    Route::patch('/stores/{store}/test-store', [StoreAdminController::class, 'markTestStore']);
+    Route::patch('/stores/{store}/seller-access', [StoreAdminController::class, 'toggleSellerAccess']);
+    Route::patch('/stores/{store}/status', [StoreAdminController::class, 'setActive']);
+
+    Route::get('/audit-logs', [AuditLogController::class, 'index']);
+
+    Route::get('/orders', [MasterOrderController::class, 'index']);
 });

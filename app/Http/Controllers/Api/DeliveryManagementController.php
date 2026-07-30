@@ -19,6 +19,14 @@ class DeliveryManagementController extends Controller
     public function dashboard(Request $request): JsonResponse
     {
         $operation = $this->operation($request);
+        if ($operation === null) {
+            return response()->json(['data' => [
+                'active_couriers' => 0,
+                'pending_confirmation' => 0,
+                'active_groups' => 0,
+                'monthly_commission' => 0.0,
+            ]]);
+        }
         $couriers = Courier::query()->where('operation_id', $operation->id);
         $monthStart = now()->startOfMonth();
 
@@ -37,6 +45,9 @@ class DeliveryManagementController extends Controller
     public function couriers(Request $request): JsonResponse
     {
         $operation = $this->operation($request);
+        if ($operation === null) {
+            return response()->json(['data' => []]);
+        }
         $monthStart = now()->startOfMonth();
 
         $couriers = Courier::query()
@@ -51,7 +62,7 @@ class DeliveryManagementController extends Controller
 
     public function storeCourier(Request $request, CourierConfirmationService $confirmation, WhatsAppClientInterface $whatsapp): JsonResponse
     {
-        $operation = $this->operation($request);
+        $operation = $this->requireOperation($request);
         $data = $request->validate([
             'full_name' => ['required', 'string', 'max:255'],
             'phone' => ['required', 'string', 'max:30', Rule::unique('couriers', 'phone')],
@@ -101,7 +112,7 @@ class DeliveryManagementController extends Controller
 
     public function updateCourier(Request $request, Courier $courier): JsonResponse
     {
-        $operation = $this->operation($request);
+        $operation = $this->requireOperation($request);
         abort_unless($courier->operation_id === $operation->id, 404);
         $data = $request->validate([
             'delivery_group_id' => ['nullable', Rule::exists('delivery_groups', 'id')],
@@ -121,7 +132,7 @@ class DeliveryManagementController extends Controller
 
     public function resendConfirmation(Request $request, Courier $courier, CourierConfirmationService $confirmation, WhatsAppClientInterface $whatsapp): JsonResponse
     {
-        $operation = $this->operation($request);
+        $operation = $this->requireOperation($request);
         abort_unless($courier->operation_id === $operation->id, 404);
         abort_if($courier->registration_status === 'confirmed', 422, 'Este entregador já confirmou o cadastro.');
 
@@ -132,6 +143,9 @@ class DeliveryManagementController extends Controller
     public function groups(Request $request): JsonResponse
     {
         $operation = $this->operation($request);
+        if ($operation === null) {
+            return response()->json(['data' => []]);
+        }
         $groups = DeliveryGroup::query()
             ->withCount(['couriers as couriers_count' => fn ($query) => $query->where('registration_status', 'confirmed')])
             ->where('operation_id', $operation->id)
@@ -143,7 +157,7 @@ class DeliveryManagementController extends Controller
 
     public function storeGroup(Request $request): JsonResponse
     {
-        $operation = $this->operation($request);
+        $operation = $this->requireOperation($request);
         $data = $request->validate([
             'name' => ['required', 'string', 'max:120'],
             'whatsapp_group_jid' => ['required', 'string', 'max:160', Rule::unique('delivery_groups', 'whatsapp_group_jid')],
@@ -153,7 +167,7 @@ class DeliveryManagementController extends Controller
         return response()->json(['data' => $this->groupData($group)], 201);
     }
 
-    private function operation(Request $request): Operation
+    private function operation(Request $request): ?Operation
     {
         $user = $request->user();
         $operationId = $request->integer('operation_id');
@@ -163,10 +177,19 @@ class DeliveryManagementController extends Controller
             $operations->where('delivery_manager_id', $user->id);
         }
         if ($operationId > 0) {
-            return $operations->findOrFail($operationId);
+            return $operations->find($operationId);
         }
 
-        return $operations->orderBy('name')->firstOrFail();
+        return $operations->orderBy('name')->first();
+    }
+
+    private function requireOperation(Request $request): Operation
+    {
+        $operation = $this->operation($request);
+
+        abort_if($operation === null, 422, 'Nenhuma operação de entrega está vinculada ao seu acesso.');
+
+        return $operation;
     }
 
     private function courierData(Courier $courier): array

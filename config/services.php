@@ -57,6 +57,17 @@ return [
         'access_token' => env('MERCADO_PAGO_ACCESS_TOKEN'),
     ],
 
+    'zapediu' => [
+        // Comissão retida pela plataforma quando a company não tem plano vinculado
+        // (plans.fee_percent manda quando existe). Ver PlatformFeeCalculator.
+        'default_fee_percent' => (float) env('ZAPEDIU_DEFAULT_FEE_PERCENT', 10),
+
+        // Número do WhatsApp do Zapediu usado como fallback no botão "voltar para a
+        // conversa" do checkout, quando a operação não tem phone_number registrado na
+        // whatsapp_session (o connectSession aceita esse campo, mas ele é opcional).
+        'whatsapp_phone' => env('ZAPEDIU_WHATSAPP_PHONE'),
+    ],
+
     'admin' => [
         'api_token' => env('ADMIN_API_TOKEN', ''),
     ],
