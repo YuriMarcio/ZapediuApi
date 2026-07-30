@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Concerns\AuthorizesAdminRequests;
 use App\Models\Plan;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -11,6 +12,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class PlanController extends Controller
 {
+    use AuthorizesAdminRequests;
+
     /** Public listing — used by the onboarding / plan picker screen. */
     public function index(): JsonResponse
     {
@@ -94,10 +97,4 @@ class PlanController extends Controller
         return response()->json(['message' => 'Plano removido.']);
     }
 
-    private function authorized(Request $request): bool
-    {
-        $token = config('auth.master_password');
-
-        return $token !== '' && $request->header('X-Admin-Token') === $token;
-    }
 }

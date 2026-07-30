@@ -4,6 +4,7 @@ namespace App\Http\Controllers\Api;
 
 use App\Actions\Webhooks\ProcessIncomingWebhookAction;
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Concerns\AuthorizesAdminRequests;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
@@ -11,6 +12,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class AdminEndpointsController extends Controller
 {
+    use AuthorizesAdminRequests;
+
     public function index(Request $request): JsonResponse
     {
         if (! $this->authorized($request)) {
@@ -53,18 +56,6 @@ class AdminEndpointsController extends Controller
         ]);
     }
 
-    private function authorized(Request $request): bool
-    {
-        $token = trim((string) config('services.admin.api_token'));
-
-        if ($token === '') {
-            return true;
-        }
-
-        $provided = (string) $request->header('X-Admin-Token', '');
-
-        return hash_equals($token, $provided);
-    }
 
     private function defaultPayload(): array
     {

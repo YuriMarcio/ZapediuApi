@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Controllers\Concerns\AuthorizesAdminRequests;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -12,6 +13,8 @@ use Symfony\Component\HttpFoundation\Response;
 
 class SellerController extends Controller
 {
+    use AuthorizesAdminRequests;
+
     public function index(Request $request): JsonResponse
     {
         $user = $request->user();
@@ -88,18 +91,6 @@ class SellerController extends Controller
         return $code;
     }
 
-    private function authorized(Request $request): bool
-    {
-        $token = trim((string) config('services.admin.api_token'));
-
-        if ($token === '') {
-            return true;
-        }
-
-        $provided = (string) $request->header('X-Admin-Token', '');
-
-        return hash_equals($token, $provided);
-    }
 
     private function sellerData(User $seller): array
     {
