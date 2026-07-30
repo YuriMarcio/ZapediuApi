@@ -13,6 +13,14 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    // `withBroadcasting` em vez do `channels:` do withRouting porque só aqui dá pra trocar o
+    // middleware da rota /broadcasting/auth. O default é o guard `web` (sessão/cookie), que
+    // NÃO vê o JWT Bearer usado pela API — o resultado era 200 com corpo vazio (nenhuma
+    // assinatura), e o canal privado nunca autorizava.
+    ->withBroadcasting(
+        __DIR__.'/../routes/channels.php',
+        attributes: ['middleware' => ['auth:api']],
+    )
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->validateCsrfTokens([
             'auth/*',
@@ -20,6 +28,10 @@ return Application::configure(basePath: dirname(__DIR__))
             'admin/*',
             'tenant/*',
             'master/*',
+            // A autorização de canal privado do Reverb chega como POST com Bearer token
+            // (não cookie de sessão) — sem esta exclusão o CSRF rejeita o handshake, já
+            // que estas rotas de API vivem no grupo `web`.
+            'broadcasting/*',
         ]);
 
         $middleware->alias([
@@ -29,7 +41,7 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(fn (Request $request, \Throwable $exception): bool =>
-            $request->expectsJson() || $request->is('auth/*', 'tenant/*', 'master/*', 'public/*', 'admin/*')
+            $request->expectsJson() || $request->is('auth/*', 'tenant/*', 'master/*', 'public/*', 'admin/*', 'broadcasting/*')
         );
     })
     ->withSchedule(function (Schedule $schedule): void {

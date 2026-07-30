@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
     libwebp-dev \
     libxml2-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp \
-    && docker-php-ext-install pdo_mysql bcmath intl zip gd exif \
+    && docker-php-ext-install pdo_mysql bcmath intl zip gd exif pcntl sockets \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 

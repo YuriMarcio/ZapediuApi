@@ -217,12 +217,18 @@ class OrderService
 
     /**
      * Advance order along the happy path:
-     *   accepted → preparing → delivering → done
+     *   pending → accepted → preparing → preparToDelivery → delivering → done
+     *
+     * `preparToDelivery` não pode ser pulado: é a transição que o OrderObserver observa
+     * pra transmitir o pedido ao grupo de entregadores. Ir de 'preparing' direto pra
+     * 'delivering' (comportamento anterior) marcava o pedido como saindo sem que nenhum
+     * motoboy tivesse sido avisado.
      */
     public function advance(Order $order, Request $request): array
     {
         $nextState = match ($order->statusValue()) {
-            'accepted', 'preparing', 'preparToDelivery' => 'delivering',
+            'accepted', 'preparing' => 'preparToDelivery',
+            'preparToDelivery' => 'delivering',
             'delivering' => 'done',
             default => null,
         };
@@ -266,6 +272,27 @@ class OrderService
 
             $order->setResolvedProducts($orderedProducts);
         }
+    }
+
+    /**
+     * Mesmo formato de um item de `list()`, exposto pro broadcast em tempo real (OrderChanged)
+     * reaproveitar em vez de montar um payload paralelo — se os dois divergirem, o card que
+     * chega pelo WebSocket fica diferente do que veio pela API.
+     *
+     * Carrega as mesmas relations que `list()` usa, porque o Observer recebe o model cru.
+     */
+    public function presentForList(Order $order): array
+    {
+        $order->loadMissing([
+            'user:id,name,email,phone',
+            'user.primaryPhone:id,user_id,phone,label,is_primary',
+            'user.primaryAddress:id,user_id,street,number,district,complement,city,state,zip_code,formatted,notes,is_primary',
+            'delivery:id,address,status',
+            'store:id,name',
+        ]);
+        $this->attachProducts(new Collection([$order]));
+
+        return $this->transformListOrder($order);
     }
 
     private function transformListOrder(Order $order): array
@@ -338,7 +365,13 @@ class OrderService
     private function transformDelivery(Order $order): array
     {
         $address = $order->user?->primaryAddress;
-        $formatted = $address?->formatted ?? $order->delivery?->address;
+        // Pedido vindo do bot guarda o endereço digitado pelo cliente em
+        // raw_payload.customer.address e pode não ter UserAddress/Delivery vinculados —
+        // sem esse fallback o card do lojista mostra "Endereço" em branco e ninguém sabe
+        // pra onde entregar.
+        $formatted = $address?->formatted
+            ?: $order->delivery?->address
+            ?: data_get($order->raw_payload, 'customer.address');
 
         return [
             'type' => 'delivery',

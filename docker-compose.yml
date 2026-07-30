@@ -28,10 +28,24 @@ x-laravel-environment: &laravel-environment
   SESSION_PATH: /
   SESSION_DOMAIN: "${SESSION_DOMAIN:-.zapediu.com}"
 
-  BROADCAST_CONNECTION: log
+  BROADCAST_CONNECTION: "${BROADCAST_CONNECTION:-reverb}"
   FILESYSTEM_DISK: local
   QUEUE_CONNECTION: database
   CACHE_STORE: database
+
+  # Como o PHP (app/worker) alcança o Reverb: nome do serviço na rede interna, sem TLS.
+  # NÃO confundir com as VITE_* abaixo, que dizem como o NAVEGADOR alcança — trocar os dois
+  # é o erro mais comum deste setup.
+  REVERB_APP_ID: "${REVERB_APP_ID}"
+  REVERB_APP_KEY: "${REVERB_APP_KEY}"
+  REVERB_APP_SECRET: "${REVERB_APP_SECRET}"
+  REVERB_HOST: reverb
+  REVERB_PORT: 8080
+  REVERB_SCHEME: http
+  # O navegador conecta em wss://<APP_URL>/app/<KEY>, terminado no proxy do Coolify e
+  # repassado pelo nginx (location ^~ /app/) — daí porta 443/https.
+  REVERB_SERVER_HOST: 0.0.0.0
+  REVERB_SERVER_PORT: 8080
 
   ADMIN_API_TOKEN: "${ADMIN_API_TOKEN}"
 
@@ -75,6 +89,32 @@ services:
     networks:
       - delivery-net
 
+  # Servidor WebSocket. Mantenha UMA réplica: com duas, um cliente conectado na réplica A não
+  # recebe evento publicado na B, e a falha é silenciosa — escalar exige REVERB_SCALING_ENABLED
+  # (pub/sub no Redis) antes de subir a contagem.
+  reverb:
+    build:
+      context: .
+      dockerfile: docker/php/Dockerfile
+      args:
+        UID: "${UID:-1000}"
+        GID: "${GID:-1000}"
+    restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+    environment:
+      <<: *laravel-environment
+      RUN_MIGRATIONS: "false"
+    expose:
+      - "8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - delivery-net
+
   nginx:
     build:
       context: .
@@ -84,6 +124,7 @@ services:
       - "80"
     depends_on:
       - app
+      - reverb
     networks:
       - delivery-net
 
@@ -141,7 +182,10 @@ services:
     # ProcessMercadoPagoWebhookJob (->onQueue('payments')) — sem nomeá-la aqui o worker
     # consome apenas `default` e nenhum webhook de pagamento do Mercado Pago é processado
     # (PIX pago pelo cliente nunca vira payment_status=paid).
-    command: php artisan queue:work --queue=payments,default --sleep=3 --tries=3 --timeout=60
+    # `broadcasts` PRIMEIRO: queue:work drena na ordem listada, e essa fila só carrega POSTs
+    # rápidos na rede interna. Sem a prioridade, um lote de notificações WhatsApp na `default`
+    # (FLOWBRIDGE_TIMEOUT=15) atrasaria o alerta de pedido novo em ~1min, anulando o WebSocket.
+    command: php artisan queue:work --queue=broadcasts,payments,default --sleep=3 --tries=3 --timeout=60
     environment:
       <<: *laravel-environment
       RUN_MIGRATIONS: "false"

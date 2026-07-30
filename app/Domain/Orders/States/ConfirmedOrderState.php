@@ -11,6 +11,8 @@ class ConfirmedOrderState implements OrderState
 
     public function canTransitionTo(string $nextState): bool
     {
-        return in_array($nextState, ['preparing', 'delivering', 'cancelled'], true);
+        // Inclui 'preparToDelivery' pra loja poder marcar como pronto direto de 'accepted',
+        // sem passar obrigatoriamente por 'preparing' (pedido simples fica pronto na hora).
+        return in_array($nextState, ['preparing', 'preparToDelivery', 'delivering', 'cancelled'], true);
     }
 }

@@ -2,6 +2,7 @@
 
 namespace App\Services\Whatsapp;
 
+use App\Enums\OrderStatus;
 use App\Models\Order;
 use App\Services\Whatsapp\WhatsAppClientInterface;
 use App\Services\Zapi\Flows\FlowManager;
@@ -33,7 +34,10 @@ class FinishDeliveryHandler
 
         if ($typedCode === strtoupper($expectedCode)) {
             // ✅ CÓDIGO CERTO! Finaliza a corrida!
-            $order->status = 'delivered'; // ou 'completed', dependendo de como está o seu sistema
+            // 'done' é o valor do enum OrderStatus para entregue — gravar 'delivered' (que
+            // não existe no enum) deixava o pedido fora de HISTORY_STATUSES, então ele
+            // nunca aparecia como Finalizado no painel do lojista.
+            $order->status = OrderStatus::Done->value;
             $order->save();
 
             // Libera o motoboy do modo "esperando código"

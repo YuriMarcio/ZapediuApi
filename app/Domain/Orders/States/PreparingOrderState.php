@@ -11,6 +11,9 @@ class PreparingOrderState implements OrderState
 
     public function canTransitionTo(string $nextState): bool
     {
-        return in_array($nextState, ['delivering', 'cancelled'], true);
+        // 'preparToDelivery' é o passo em que a loja termina o preparo e o pedido é
+        // transmitido ao grupo de entregadores (OrderObserver). 'delivering' continua
+        // permitido porque é o motoboy que aceita a corrida a partir daí.
+        return in_array($nextState, ['preparToDelivery', 'delivering', 'cancelled'], true);
     }
 }
