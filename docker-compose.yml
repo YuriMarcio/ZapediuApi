@@ -79,11 +79,11 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: "${UID:-1000}"
-        GID: "${GID:-1000}"
+        UID: "1000"
+        GID: "1000"
     mem_limit: 1200m
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "1000:1000"
     environment:
       <<: *laravel-environment
       RUN_MIGRATIONS: "true"
@@ -103,11 +103,11 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: "${UID:-1000}"
-        GID: "${GID:-1000}"
+        UID: "1000"
+        GID: "1000"
     mem_limit: 256m
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "1000:1000"
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
     environment:
       <<: *laravel-environment
@@ -198,11 +198,11 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: "${UID:-1000}"
-        GID: "${GID:-1000}"
+        UID: "1000"
+        GID: "1000"
     mem_limit: 160m
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "1000:1000"
     command: php artisan queue:work --queue=broadcasts --sleep=1 --tries=3 --timeout=30
     environment:
       <<: *laravel-environment
@@ -222,19 +222,21 @@ services:
   # 3 réplicas porque estes jobs são I/O-bound (HTTP para FlowBridge e Mercado Pago): passam o
   # tempo esperando resposta, não consumindo CPU. Com uma só, um job de 15s bloqueava toda a
   # fila de notificações. Cada réplica custa ~35 MB (medido).
-  worker:
+  # São três serviços iguais em vez de `deploy.replicas: 3` porque o Coolify atribui um
+  # `container_name` fixo a cada serviço, e o Compose recusa nome fixo com mais de uma
+  # réplica ("container name must be unique"). Declarados um a um, cada um ganha o seu nome
+  # e os três consomem a MESMA fila do Redis — o efeito é idêntico ao das réplicas.
+  worker: &worker
     build:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: "${UID:-1000}"
-        GID: "${GID:-1000}"
+        UID: "1000"
+        GID: "1000"
     mem_limit: 160m
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "1000:1000"
     command: php artisan queue:work --queue=payments,default --sleep=3 --tries=3 --timeout=60
-    deploy:
-      replicas: 3
     environment:
       <<: *laravel-environment
       RUN_MIGRATIONS: "false"
@@ -246,6 +248,12 @@ services:
     networks:
       - delivery-net
 
+  worker-2:
+    <<: *worker
+
+  worker-3:
+    <<: *worker
+
   # O bootstrap/app.php agenda `orders:cleanup-pending` (15min) e
   # `orders:send-pending-payment-reminders` (5min), mas NENHUM processo executava o scheduler —
   # os dois comandos nunca rodaram em produção. `schedule:work` é o daemon que dispara isso
@@ -255,11 +263,11 @@ services:
       context: .
       dockerfile: docker/php/Dockerfile
       args:
-        UID: "${UID:-1000}"
-        GID: "${GID:-1000}"
+        UID: "1000"
+        GID: "1000"
     mem_limit: 160m
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "1000:1000"
     command: php artisan schedule:work
     environment:
       <<: *laravel-environment
