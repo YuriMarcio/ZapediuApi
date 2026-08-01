@@ -95,6 +95,10 @@ class StoreHandle
         $pageStoreIds = array_slice($storeIds, $offset, self::STORE_PAGE_SIZE);
 
         if (empty($pageStoreIds)) {
+            if ($offset === 0) {
+                $this->zapiClient->sendText($phone, '😴 Nenhuma loja está aberta no momento. Volte mais tarde!');
+            }
+
             return false;
         }
 
