@@ -84,8 +84,9 @@ class StockService
             if ($product->relationLoaded('variationGroup') && $product->variationGroup) {
                 $product->variationGroup->makeHidden('products');
             }
-            if ($product->relationLoaded('category') && $product->category) {
-                $product->category->makeHidden('products');
+            $categoryModel = $product->getRelation('category');
+            if ($product->relationLoaded('category') && $categoryModel) {
+                $categoryModel->makeHidden('products');
             }
             if ($product->relationLoaded('optionalFlows')) {
                 $product->setAttribute('optional_flow_id', $product->optionalFlows->first()?->id);
