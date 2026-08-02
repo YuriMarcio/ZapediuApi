@@ -17,6 +17,12 @@ class CompanyScope implements Scope
         /** @var TenantContext $tenant */
         $tenant = app(TenantContext::class);
 
+        if ($tenant->hasCompanyIds()) {
+            $builder->whereIn($model->getTable().'.company_id', $tenant->companyIds());
+
+            return;
+        }
+
         if (! $tenant->hasCompany()) {
             return;
         }

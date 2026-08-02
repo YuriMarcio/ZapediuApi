@@ -24,13 +24,26 @@ class ProcessIncomingWebhookAction
     /**
      * @param  array<string, mixed>  $payload
      */
-    public function execute(array $payload, ?int $companyId = null): WebhookEvent
+    public function execute(array $payload, ?int $companyId = null, ?int $operationId = null): WebhookEvent
     {
         $company = $this->resolveCompany($payload, $companyId);
 
         /** @var TenantContext $tenant */
         $tenant = app(TenantContext::class);
         $tenant->setCompanyId($company?->id);
+
+        // Uma Operation pode ter várias companies (várias lojas) atrás do mesmo número de
+        // WhatsApp — sem isso, o CompanyScope só enxergaria a company "principal" resolvida
+        // acima e o resto das lojas da operação sumiria pro cliente (Ver Lojas, busca, etc).
+        if ($operationId !== null) {
+            $companyIds = Company::query()
+                ->where('operation_id', $operationId)
+                ->where('is_active', true)
+                ->pluck('id')
+                ->all();
+
+            $tenant->setCompanyIds($companyIds);
+        }
 
         $event = WebhookEvent::query()->create([
             'company_id' => $company?->id,

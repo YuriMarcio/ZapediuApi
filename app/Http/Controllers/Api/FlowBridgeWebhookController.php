@@ -44,7 +44,7 @@ class FlowBridgeWebhookController extends Controller
         }
 
         $tenant->setCompanyId($company?->id);
-        ProcessZapiWebhookJob::dispatch($company?->id, $payload, $session?->flowbridge_instance_id);
+        ProcessZapiWebhookJob::dispatch($company?->id, $payload, $session?->flowbridge_instance_id, $session?->operation_id);
 
         return response()->json([
             'message' => 'Webhook accepted for async processing.',

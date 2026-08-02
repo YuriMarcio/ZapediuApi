@@ -24,6 +24,7 @@ class ProcessZapiWebhookJob implements ShouldQueue
         private readonly ?int $companyId,
         private readonly array $payload,
         private readonly ?string $whatsappInstanceId = null,
+        private readonly ?int $operationId = null,
     ) {
     }
 
@@ -99,6 +100,6 @@ class ProcessZapiWebhookJob implements ShouldQueue
             }
         }
 
-        $action->execute($this->payload, $this->companyId);
+        $action->execute($this->payload, $this->companyId, $this->operationId);
     }
 }
